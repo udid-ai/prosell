@@ -111,23 +111,49 @@ async function bearerHeaders(extra = {}) {
   return { Accept: "application/json", Authorization: `Bearer ${await accessToken()}`, ...extra };
 }
 
-/** 주문 목록 조회 — GET /order/search (운영자) */
+// 주문 응답에 주문번호(dno)를 명시한다. dno 는 주문 레벨이 아니라 배송(delivery)/상품(product)에
+// 있어 AI 가 pno·ono 를 주문번호로 오인할 수 있다. 응답에서 실제 dno 를 모아 order.dno 로 올린다.
+// 한 주문(ono)에 배송그룹이 여러 개면 dno 도 여러 개 → 배열로 준다. (dno 는 ono 와 다를 수 있음)
+function collectDnos(entry) {
+  const dnos = new Set();
+  const add = (v) => { if (v !== undefined && v !== null && v !== 0 && v !== "") dnos.add(v); };
+  add(entry?.delivery?.dno);
+  add(entry?.product?.dno);
+  if (Array.isArray(entry?.items)) for (const it of entry.items) { add(it?.delivery?.dno); add(it?.product?.dno); }
+  return [...dnos];
+}
+
+function withOrderNo(data) {
+  const list = Array.isArray(data?.orders) ? data.orders : Array.isArray(data?.items) ? data.items : null;
+  if (list) {
+    for (const e of list) {
+      if (e?.order && e.order.dno == null) {
+        const dnos = collectDnos(e);
+        if (dnos.length === 1) e.order.dno = dnos[0];
+        else if (dnos.length > 1) e.order.dno = dnos; // 복수 배송그룹 → 주문번호 여러 개
+      }
+    }
+  }
+  return data;
+}
+
+/** 주문 목록 조회 — GET /order/search (운영자). dno 확보 위해 delivery 확장 포함, order.dno 주입. */
 export async function listOrders(params = {}) {
   const u = new URL(`${apiBase()}/order/search`);
-  const merged = { expand: "order,payment", ...params };
+  const merged = { expand: "order,payment,delivery", ...params };
   for (const [k, v] of Object.entries(merged)) {
     if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
   }
   const res = await fetch(u, { headers: await bearerHeaders() });
-  return jsonOrThrow(res, "주문 목록 조회 실패");
+  return withOrderNo(await jsonOrThrow(res, "주문 목록 조회 실패"));
 }
 
-/** 주문 상세 조회 — GET /order/{ono} (운영자) */
+/** 주문 상세 조회 — GET /order/{ono} (운영자). 응답에 order.dno(주문번호) 주입. */
 export async function getOrder(ono, expand = "order,payment,product,delivery,tracking") {
   const u = new URL(`${apiBase()}/order/${encodeURIComponent(ono)}`);
   if (expand) u.searchParams.set("expand", expand);
   const res = await fetch(u, { headers: await bearerHeaders() });
-  return jsonOrThrow(res, "주문 조회 실패");
+  return withOrderNo(await jsonOrThrow(res, "주문 조회 실패"));
 }
 
 /** 발송 처리 — POST /order/delivering. 상품주문번호(prno)들을 배송중으로(운송장 필수). */
@@ -140,17 +166,159 @@ export async function shipOrders(items) {
   return jsonOrThrow(res, "발송 처리 실패"); // { timestamp, success_prno_ids, fail_prno_error? }
 }
 
-/** 무통장 입금확인 → 결제완료 (POST /order/banking/confirm). 주문(ono) 단위, 최대 50.
- *  신규 라우터로, BankUpdate 가 주문 전체(상품상태·결제내역·재고·완료메시지)를 일괄 결제완료한다.
- *  무통장(pay_method=300)·입금대기(pay_state 1,2) 건에만 적용된다. */
-export async function confirmBankPayment(onoIds) {
+// 무통장 입금확인 계열 — 주문(ono) 단위 일괄(최대 50), 본문 {ono_ids}, 응답 {success_ono_ids, fail_ono_error}.
+async function postOnoIds(path, onoIds, fallback) {
   const ono_ids = Array.isArray(onoIds) ? onoIds.join(",") : String(onoIds);
-  const res = await fetch(`${apiBase()}/order/banking/confirm`, {
+  const res = await fetch(`${apiBase()}/${path}`, {
     method: "POST",
     headers: await bearerHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ ono_ids }),
   });
-  return jsonOrThrow(res, "결제완료 처리 실패"); // { success_ono_ids, fail_ono_error }
+  return jsonOrThrow(res, fallback);
+}
+
+/** 무통장 입금확인 → 결제완료 (신규 라우터 order/banking/confirm). BankUpdate 로 주문 전체
+ *  (상품상태·결제내역·재고·완료메시지)를 일괄 결제완료. 무통장·입금대기(1,2) 건만. */
+export const confirmBankPayment = (onoIds) => postOnoIds("order/banking/confirm", onoIds, "결제완료 처리 실패");
+
+/** 무통장 입금대기로 변경 (order/banking/paywait). 무통장·결제보류/완료(2,10) 건만. */
+export const setBankWaiting = (onoIds) => postOnoIds("order/banking/paywait", onoIds, "입금대기 처리 실패");
+
+/** 무통장 입금보류로 변경 (order/banking/payhold). */
+export const setBankHold = (onoIds) => postOnoIds("order/banking/payhold", onoIds, "입금보류 처리 실패");
+
+// 상품주문(prno) 단위 상태변경 — 본문 {prno_ids}, 응답 {success_prno_ids, fail_prno_error}.
+async function postPrnoIds(path, prnoIds, fallback) {
+  const prno_ids = Array.isArray(prnoIds) ? prnoIds.join(",") : String(prnoIds);
+  const res = await fetch(`${apiBase()}/${path}`, {
+    method: "POST",
+    headers: await bearerHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ prno_ids }),
+  });
+  return jsonOrThrow(res, fallback);
+}
+
+/** 발주 확인 — 상품주문을 상품준비중으로 변경 (order/standby). */
+export const setPreparing = (prnoIds) => postPrnoIds("order/standby", prnoIds, "발주확인(상품준비중) 처리 실패");
+
+/** 발송 지연 — 상품주문을 발송지연으로 변경 (order/delay). */
+export const setShippingDelay = (prnoIds) => postPrnoIds("order/delay", prnoIds, "발송지연 처리 실패");
+
+/** 택배사 목록 조회 — GET /parcel. id(=ship_order 의 pro_parcel_id) + title(이름)만 경량 반환.
+ *  기본 페이지(10)만 오지 않게 limit 를 크게 줘 전체를 가져온다. title 로 부분검색 가능. */
+export async function listCouriers({ title } = {}) {
+  const u = new URL(`${apiBase()}/parcel`);
+  u.searchParams.set("limit", "1000");
+  if (title) u.searchParams.set("title", title);
+  const res = await fetch(u, { headers: await bearerHeaders() });
+  const data = await jsonOrThrow(res, "택배사 조회 실패");
+  const couriers = Array.isArray(data?.items)
+    ? data.items.map((c) => ({ id: c.id, title: c.title, en_code: c.en_code, active: c.onoff }))
+    : data;
+  return { total_count: data?.total_count, couriers };
+}
+
+/** 택배사 등록 — POST /parcel (운영자). title 필수, 동일 title 있으면 OVERLAP. 응답 { id }. */
+export async function createCourier(body) {
+  const res = await fetch(`${apiBase()}/parcel`, {
+    method: "POST",
+    headers: await bearerHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res, "택배사 등록 실패");
+}
+
+/** 택배사 수정 — PUT /parcel/{id} (운영자). 바꿀 필드만 body 로. */
+export async function updateCourier(id, body) {
+  const res = await fetch(`${apiBase()}/parcel/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: await bearerHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res, "택배사 수정 실패");
+}
+
+/** 택배사 삭제 — DELETE /parcel/{id} (운영자). */
+export async function deleteCourier(id) {
+  const res = await fetch(`${apiBase()}/parcel/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: await bearerHeaders(),
+  });
+  return jsonOrThrow(res, "택배사 삭제 실패");
+}
+
+// ── 취소(Cancel) ─────────────────────────────────────────────────────────
+/** 취소내역 목록 조회 — GET /order/cancel (운영자). */
+export async function listCancels(params = {}) {
+  const u = new URL(`${apiBase()}/order/cancel`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
+  }
+  const res = await fetch(u, { headers: await bearerHeaders() });
+  return jsonOrThrow(res, "취소내역 조회 실패");
+}
+
+/** 취소 접수 — POST /order/cancel (운영자). 배송 전 상품을 취소요청.
+ *  body: { ono, items:[{prno, quantity}], can_ct(사유), can_content?, can_bank_*? } */
+export async function createCancel(body) {
+  const res = await fetch(`${apiBase()}/order/cancel`, {
+    method: "POST",
+    headers: await bearerHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res, "취소 접수 실패");
+}
+
+// ── 반품(Refund) / 교환(Exchange) — 공용 헬퍼 ───────────────────────────────
+async function getJson(path, params, fallback) {
+  const u = new URL(`${apiBase()}/${path}`);
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
+  const res = await fetch(u, { headers: await bearerHeaders() });
+  return jsonOrThrow(res, fallback);
+}
+async function postJson(path, body, fallback) {
+  const res = await fetch(`${apiBase()}/${path}`, {
+    method: "POST",
+    headers: await bearerHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res, fallback);
+}
+async function deleteById(path, id, fallback) {
+  const res = await fetch(`${apiBase()}/${path}/${encodeURIComponent(id)}`, { method: "DELETE", headers: await bearerHeaders() });
+  return jsonOrThrow(res, fallback);
+}
+
+/** 반품내역 조회 — GET /order/refund (운영자). */
+export const listRefunds = (params = {}) => getJson("order/refund", params, "반품내역 조회 실패");
+/** 반품 접수 — POST /order/refund. body:{ono, items:[{prno,quantity}], ref_ct(사유), ref_content?} */
+export const createRefund = (body) => postJson("order/refund", body, "반품 접수 실패");
+/** 반품 거부 — DELETE /order/refund/{rno}. */
+export const rejectRefund = (rno) => deleteById("order/refund", rno, "반품 거부 실패");
+
+/** 교환내역 조회 — GET /order/exchange (운영자). */
+export const listExchanges = (params = {}) => getJson("order/exchange", params, "교환내역 조회 실패");
+/** 교환 접수 — POST /order/exchange. body:{ono, items:[{prno,quantity}], exc_ct(사유), exc_content?} */
+export const createExchange = (body) => postJson("order/exchange", body, "교환 접수 실패");
+/** 교환 거부 — DELETE /order/exchange/{eno}. */
+export const rejectExchange = (eno) => deleteById("order/exchange", eno, "교환 거부 실패");
+
+/** 클레임 사유 조회 — GET /shop/claim. 취소·반품·교환 각각의 사유 카테고리(선택지)를 반환.
+ *  create_cancel/refund/exchange 의 사유(can_ct/ref_ct/exc_ct)를 여기서 골라 넣는다. */
+export async function getClaimReasons() {
+  const res = await fetch(`${apiBase()}/shop/claim`, { headers: await bearerHeaders() });
+  return jsonOrThrow(res, "클레임 사유 조회 실패"); // { cancel:{categories}, refund:{...}, exchange:{...} }
+}
+
+/** 클레임 사유 업데이트 — PUT /shop/claim (운영자). 보낸 유형만 전체 교체.
+ *  body: { cancel:[제목], refund:[{title,price}], exchange:[{title,price}] } */
+export async function updateClaimReasons(body) {
+  const res = await fetch(`${apiBase()}/shop/claim`, {
+    method: "PUT",
+    headers: await bearerHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res, "클레임 사유 업데이트 실패");
 }
 
 /** 운송장 수정 — PUT /order/delivering. 이미 발송된 건의 송장 정보 변경. */

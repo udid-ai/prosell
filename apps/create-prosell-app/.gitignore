@@ -1,0 +1,3 @@
+/node_modules
+# template 은 apps/starter 에서 동기화되는 산출물 (sync-template / prepublishOnly)
+.DS_Store

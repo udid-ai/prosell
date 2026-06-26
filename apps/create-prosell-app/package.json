@@ -1,0 +1,39 @@
+{
+  "name": "create-prosell-app",
+  "version": "0.1.1",
+  "description": "프로셀 스토어프론트(starter) 스캐폴더 — npx create-prosell-app my-shop",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "create-prosell-app": "index.js"
+  },
+  "files": [
+    "index.js",
+    "template",
+    "README.md"
+  ],
+  "keywords": [
+    "prosell",
+    "create-app",
+    "ecommerce",
+    "storefront",
+    "next"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/udid-ai/prosell.git",
+    "directory": "apps/create-prosell-app"
+  },
+  "scripts": {
+    "sync-template": "node sync-template.mjs",
+    "check": "node --check index.js && node --check sync-template.mjs",
+    "prepublishOnly": "npm run sync-template && npm run check"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "homepage": "https://ai.prosell.kr",
+  "bugs": {
+    "url": "https://github.com/udid-ai/prosell/issues"
+  }
+}

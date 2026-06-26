@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/* 클래스 기반 다크모드 (.dark 토글) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── 디자인 토큰 (라이트) ──────────────────────────────────
+   AI 재디자인 시 색을 바꾸는 곳. 라이트=:root, 다크=.dark.
+   데이터/로직(lib/prosell.ts)은 건드리지 말 것. */
+:root {
+  --c-text: #1f2430;
+  --c-sub: #8a93a3;
+  --c-line: #eceef1;
+  --c-bg: #f5f6f8;
+  --c-card: #ffffff;
+  --c-accent: #2f6df6;
+  --c-accent-fg: #ffffff;
+  --c-muted: #9bb6f0;   /* 비활성 버튼 */
+  --c-sale: #e0392b;
+  --c-success: #3aa657;
+  --c-readonly: #f3f4f6;
+}
+
+.dark {
+  --c-text: #e7e9ee;
+  --c-sub: #9aa3b2;
+  --c-line: #2a2f3a;
+  --c-bg: #14171c;
+  --c-card: #1c2027;
+  --c-accent: #4d82ff;
+  --c-accent-fg: #ffffff;
+  --c-muted: #34406a;
+  --c-sale: #ff6b5e;
+  --c-success: #4cc46a;
+  --c-readonly: #262b34;
+}
+
+/* ── 토큰 → Tailwind 유틸 매핑 (inline: 런타임 var 반영) ── */
+@theme inline {
+  --color-text: var(--c-text);
+  --color-sub: var(--c-sub);
+  --color-line: var(--c-line);
+  --color-bg: var(--c-bg);
+  --color-card: var(--c-card);
+  --color-accent: var(--c-accent);
+  --color-accent-foreground: var(--c-accent-fg);
+  --color-muted: var(--c-muted);
+  --color-sale: var(--c-sale);
+  --color-success: var(--c-success);
+  --color-readonly: var(--c-readonly);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.06);
+  --font-sans: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+
+  /* 콘텐츠 최대 폭 → max-w-content 유틸 */
+  --container-content: 1200px;
+}
+
+html { color-scheme: light; }
+html.dark { color-scheme: dark; }
+
+/* 부드러운 스크롤/폰트 */
+html { -webkit-text-size-adjust: 100%; }
+body { text-rendering: optimizeLegibility; }
+
+/* iOS 하단 안전영역(플로팅 메뉴용) */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.bottom-safe { bottom: calc(env(safe-area-inset-bottom) + 0.75rem); }
+
+/* 디자인 페이지 목차(#item-header) 항목 클릭 가능 표시 */
+.doc-content #item-header [data-item] { cursor: pointer; }
+.doc-content #item-header [data-item]:hover { text-decoration: underline; }

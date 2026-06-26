@@ -7,8 +7,10 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { shopBase, saveCredentials } from "./config.js";
 import { exchangeProvisionCode } from "./api.js";
+import { callbackPage } from "./callback-page.js";
 
 const TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -39,12 +41,12 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
         saveCredentials(creds);
 
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end("<h2>연결 완료</h2><p>이 창을 닫고 AI 로 돌아가세요.</p>");
+        res.end(callbackPage({ ok: true, title: "연결 완료", message: "이 창을 닫고 AI 로 돌아가세요." }));
         cleanup();
         resolve({ ok: true, client_id: creds.client_id, client_name: creds.client_name });
       } catch (e) {
         res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(`<h2>연결 실패</h2><p>${escapeHtml(e.message)}</p>`);
+        res.end(callbackPage({ ok: false, title: "연결 실패", message: e.message }));
         cleanup();
         reject(e);
       }
@@ -78,18 +80,24 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
   });
 }
 
+// WSL 여부 — WSL 에선 xdg-open 이 Windows 브라우저를 못 여니 powershell.exe 로 우회한다.
+function isWSL() {
+  if (process.platform !== "linux") return false;
+  try { return /microsoft/i.test(readFileSync("/proc/version", "utf8")); } catch { return false; }
+}
+
 function tryOpenBrowser(url) {
-  const cmd =
-    process.platform === "darwin" ? "open" :
-    process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  let cmd, args;
+  if (process.platform === "darwin") { cmd = "open"; args = [url]; }
+  else if (process.platform === "win32") { cmd = "cmd"; args = ["/c", "start", "", url]; }
+  else if (isWSL()) { cmd = "powershell.exe"; args = ["-NoProfile", "-Command", "Start-Process", `'${url}'`]; }
+  else { cmd = "xdg-open"; args = [url]; }
   try {
-    spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
+    // ENOENT 는 비동기 'error' 이벤트 → 핸들러로 흡수(미처리 시 프로세스 크래시).
+    const ch = spawn(cmd, args, { stdio: "ignore", detached: true });
+    ch.on("error", () => {});
+    ch.unref();
   } catch {
     // 브라우저 자동 실행 실패해도 stderr 안내 URL 로 수동 진행 가능
   }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }

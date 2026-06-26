@@ -9,9 +9,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { shopBase, credentials, saveShop } from "./config.js";
-import { listProducts, getProduct, LIST_EXPAND, DETAIL_EXPAND } from "./api.js";
+import { shopBase, credentials, saveShop, tokens } from "./config.js";
+import {
+  listProducts, getProduct, LIST_EXPAND, DETAIL_EXPAND,
+  listOrders, getOrder, shipOrders, updateTracking, confirmBankPayment,
+} from "./api.js";
 import { runConnect } from "./connect.js";
+import { runLogin } from "./login.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -34,7 +38,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.1.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.2.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -58,10 +62,12 @@ server.tool(
   async () => {
     try {
       const creds = credentials();
+      const tok = tokens();
       return ok({
         shop: shopBase(),
-        connected: !!creds,
+        connected: !!creds,            // connect 로 앱 자격증명 발급됨
         client_id: creds?.client_id ?? null,
+        logged_in: !!tok,              // login 으로 운영자 토큰 보유(주문 관리 가능)
         list_expand: LIST_EXPAND,
         detail_expand: DETAIL_EXPAND,
       });
@@ -118,6 +124,128 @@ server.tool(
   async ({ id, expand }) => {
     try {
       return ok(await getProduct(id, expand || DETAIL_EXPAND));
+    } catch (e) {
+      return fail(e.message);
+    }
+  }
+);
+
+// ── 주문 관리(운영자) — Bearer 토큰 필요(먼저 login) ─────────────────────────
+server.tool(
+  "login",
+  "운영자로 로그인해 주문 관리용 토큰을 발급한다. 브라우저가 열리며, 운영자가 로그인/동의하면 완료. (connect 로 앱 연결을 먼저 끝내야 함)",
+  {
+    scope: z.string().optional().describe("OAuth scope (기본 user)"),
+  },
+  async ({ scope }) => {
+    try {
+      const r = await runLogin({ scope });
+      return ok({ message: "운영자 로그인 완료", ...r });
+    } catch (e) {
+      return fail(`로그인 실패: ${e.message}`);
+    }
+  }
+);
+
+server.tool(
+  "list_orders",
+  "주문 목록을 조회한다(운영자). 기간·주문상태·페이지로 필터.",
+  {
+    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
+    pro_state: z.number().int().optional().describe("상품 주문상태 코드로 필터"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(100).optional().describe("페이지당 건수(기본 10)"),
+    ono_ids: z.string().optional().describe("주문서 유니크키(ono) 복수 조회 시 콤마 구분"),
+    expand: z.string().optional().describe("기본: order,payment (product,delivery,tracking 등 추가 가능)"),
+  },
+  async (params) => {
+    try {
+      return ok(await listOrders(params));
+    } catch (e) {
+      return fail(e.message);
+    }
+  }
+);
+
+server.tool(
+  "get_order",
+  "주문 단건(상세)을 조회한다(운영자). ono(주문서 유니크키)로 조회하며 상품·배송·운송장 포함.",
+  {
+    ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
+    expand: z.string().optional().describe("기본: order,payment,product,delivery,tracking"),
+  },
+  async ({ ono, expand }) => {
+    try {
+      return ok(await getOrder(ono, expand));
+    } catch (e) {
+      return fail(e.message);
+    }
+  }
+);
+
+// 발송 처리·운송장 — 단위는 상품주문번호(prno). prno 는 get_order 의 items[].prno 에서 얻는다.
+const shipItem = z.object({
+  prno: z.union([z.number().int(), z.string()]).describe("상품주문번호(prno)"),
+  pro_parcel_id: z.number().int().describe("택배사 코드(유니크키). 쇼핑몰 어드민의 택배사 목록 값"),
+  pro_parcel_num: z.string().describe("운송장번호"),
+  pro_delivery_dt: z.string().optional().describe("발송일시 YYYY-MM-DDThh:mm:ss+09:00 (생략 시 현재)"),
+});
+
+server.tool(
+  "ship_order",
+  "발송 처리 — 상품주문번호(prno)들을 배송중으로 바꾸고 운송장을 등록한다(운영자). 한 번에 최대 50건.",
+  {
+    items: z.array(shipItem).min(1).max(50).describe("발송할 상품주문 목록(각 항목에 운송장 정보)"),
+  },
+  async ({ items }) => {
+    try {
+      return ok(await shipOrders(items));
+    } catch (e) {
+      return fail(e.message);
+    }
+  }
+);
+
+server.tool(
+  "update_tracking",
+  "이미 발송된 건의 운송장 정보를 수정한다(운영자). 한 번에 최대 50건.",
+  {
+    items: z
+      .array(
+        z.object({
+          prno: z.union([z.number().int(), z.string()]).describe("상품주문번호(prno)"),
+          pro_parcel_id: z.number().int().optional().describe("택배사 코드"),
+          pro_parcel_num: z.string().optional().describe("운송장번호"),
+          pro_delivery_dt: z.string().optional().describe("발송일시 YYYY-MM-DDThh:mm:ss+09:00"),
+        })
+      )
+      .min(1)
+      .max(50),
+  },
+  async ({ items }) => {
+    try {
+      return ok(await updateTracking(items));
+    } catch (e) {
+      return fail(e.message);
+    }
+  }
+);
+
+server.tool(
+  "confirm_payment",
+  "무통장 입금확인 → 결제완료 처리(운영자). 주문번호(ono)들을 결제완료로 바꾼다. " +
+    "주문 전체(상품·재고·완료처리)가 일괄 반영된다. 무통장·입금대기 건에만 적용, 한 번에 최대 50건.",
+  {
+    ono_ids: z
+      .array(z.union([z.number().int(), z.string()]))
+      .min(1)
+      .max(50)
+      .describe("결제완료 처리할 주문번호(ono) 목록"),
+  },
+  async ({ ono_ids }) => {
+    try {
+      return ok(await confirmBankPayment(ono_ids));
     } catch (e) {
       return fail(e.message);
     }

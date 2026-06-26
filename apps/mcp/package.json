@@ -1,7 +1,7 @@
 {
   "name": "prosell",
-  "version": "0.1.1",
-  "description": "Prosell 쇼핑몰 MCP 서버 — API 명세(resources) + 상품 조회(tools) + AI 연결 자동등록(connect)",
+  "version": "0.2.0",
+  "description": "Prosell 쇼핑몰 MCP 서버 — API 명세(resources) + 상품/주문 관리(tools) + AI 연결 자동등록(connect)",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -26,7 +26,8 @@
   "scripts": {
     "start": "node src/index.js",
     "test:connect": "node test/connect-test.mjs",
-    "check": "node --check src/index.js && node --check src/config.js && node --check src/connect.js && node --check src/api.js && node --check test/connect-test.mjs",
+    "test:order": "node test/order-test.mjs",
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/connect.js && node --check src/api.js && node --check src/login.js && node --check src/callback-page.js && node --check test/connect-test.mjs && node --check test/order-test.mjs",
     "prepublishOnly": "npm run check"
   },
   "engines": {

@@ -27,6 +27,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 // ── 설정 ─────────────────────────────────────────────────────────────────────
 const SHOP = (process.env.PROSELL_SHOP || "").replace(/\/$/, "");
@@ -200,10 +201,23 @@ server.listen(0, "127.0.0.1", () => {
   tryOpenBrowser(consent.toString());
 });
 
+function isWSL() {
+  if (process.platform !== "linux") return false;
+  try { return /microsoft/i.test(readFileSync("/proc/version", "utf8")); } catch { return false; }
+}
+
 function tryOpenBrowser(url) {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  try { spawn(cmd, args, { stdio: "ignore", detached: true }).unref(); } catch {}
+  let cmd, args;
+  if (process.platform === "darwin") { cmd = "open"; args = [url]; }
+  else if (process.platform === "win32") { cmd = "cmd"; args = ["/c", "start", "", url]; }
+  else if (isWSL()) { cmd = "powershell.exe"; args = ["-NoProfile", "-Command", "Start-Process", `'${url}'`]; }
+  else { cmd = "xdg-open"; args = [url]; }
+  try {
+    // spawn 의 ENOENT 는 비동기 'error' 이벤트로 오므로 반드시 핸들러로 흡수(미처리 시 프로세스 크래시).
+    const ch = spawn(cmd, args, { stdio: "ignore", detached: true });
+    ch.on("error", () => {});
+    ch.unref();
+  } catch {}
 }
 
 // ── HTML/escape ──────────────────────────────────────────────────────────────

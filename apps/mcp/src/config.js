@@ -24,10 +24,18 @@ export function apiBase() {
   return `${shopBase()}/api/v2`;
 }
 
-/** 저장된 클라이언트 자격증명 (connect 로 발급) */
+/** 클라이언트 자격증명. connect 로 발급한 저장값 우선, 없으면 환경변수 사용.
+ *  이미 앱(client_id/secret)이 있으면 connect 없이 env 로 바로 login 할 수 있다.
+ *    PROSELL_CLIENT_ID / PROSELL_CLIENT_SECRET / PROSELL_REDIRECT_URI */
 export function credentials() {
   const c = read();
-  return c.client_id ? { client_id: c.client_id, client_secret: c.client_secret, redirect_uri: c.redirect_uri } : null;
+  const client_id = c.client_id || process.env.PROSELL_CLIENT_ID || null;
+  if (!client_id) return null;
+  return {
+    client_id,
+    client_secret: c.client_secret || process.env.PROSELL_CLIENT_SECRET || null,
+    redirect_uri: c.redirect_uri || process.env.PROSELL_REDIRECT_URI || null,
+  };
 }
 
 export function clientId() {
@@ -43,6 +51,40 @@ export function saveCredentials(creds) {
 export function saveShop(shop) {
   const c = read();
   write({ ...c, shop: shop.replace(/\/$/, "") });
+}
+
+// ── 운영자 토큰(주문 관리용) ──────────────────────────────────────────
+// 주문 관리 API 는 Bearer access_token 이 필요하다. login 플로우가 발급해 저장하고,
+// 만료 시 refresh_token 으로 갱신한다. (access 3h / refresh 30d)
+export function saveTokens(t) {
+  const c = read();
+  const now = Date.now();
+  // 만료 60초 전을 만료로 간주(시계오차·왕복 여유).
+  const exp = (sec) => (sec ? now + (Number(sec) - 60) * 1000 : null);
+  write({
+    ...c,
+    access_token: t.access_token,
+    refresh_token: t.refresh_token ?? c.refresh_token,
+    access_expires_at: exp(t.expires_in),
+    refresh_expires_at: t.refresh_token_expires_in ? exp(t.refresh_token_expires_in) : c.refresh_expires_at,
+  });
+}
+
+export function tokens() {
+  const c = read();
+  if (!c.access_token) return null;
+  return {
+    access_token: c.access_token,
+    refresh_token: c.refresh_token ?? null,
+    access_expires_at: c.access_expires_at ?? 0,
+    refresh_expires_at: c.refresh_expires_at ?? 0,
+  };
+}
+
+export function clearTokens() {
+  const c = read();
+  for (const k of ["access_token", "refresh_token", "access_expires_at", "refresh_expires_at"]) delete c[k];
+  write(c);
 }
 
 function read() {

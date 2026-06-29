@@ -20,6 +20,16 @@ import {
   listExchanges, createExchange, rejectExchange,
   getClaimReasons, updateClaimReasons,
   listCouriers, createCourier, updateCourier, deleteCourier,
+  createProduct, updateProduct, deleteProduct, getProductOption, uploadProductImages,
+  listCategories, createCategory, updateCategory, deleteCategory,
+  listSuppliers, createSupplier, updateSupplier, deleteSupplier,
+  listBrands, createBrand, updateBrand, deleteBrand, uploadBrandImage, deleteBrandImage,
+  listAddoptions, createAddoption, updateAddoption, deleteAddoption,
+  listColors, createColors, updateColor, deleteColor,
+  listSizes, createSizes, updateSize, deleteSize,
+  listIcons, createIcon, updateIcon, deleteIcon,
+  listTemplates, createTemplate, updateTemplate, deleteTemplate,
+  listInformation,
 } from "./api.js";
 import { runConnect } from "./connect.js";
 import { runLogin } from "./login.js";
@@ -45,7 +55,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.3.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.4.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -591,6 +601,425 @@ server.tool(
       return fail(e.message);
     }
   }
+);
+
+// ── 상품 관리(운영자) ───────────────────────────────────────────────────────
+// 등록/수정 본문은 섹션(origin/product/delivery/request/content/benefit)이 깊어 전 필드를
+// 스키마로 강제하지 않고 느슨한 객체로 받는다. 정확한 필드는 guide(llms.txt)/openapi 의 상품 스키마 참고.
+const looseObj = () => z.record(z.any());
+
+server.tool(
+  "create_product",
+  "상품을 등록한다(운영자). 본문은 섹션 객체로 구성한다: " +
+    "origin(기본정보 — title 필수, option_type 필수(0=단일,1~3=옵션단계), category 등), " +
+    "product(주문옵션 행 배열 — 옵션 조합별 price/quantity/code 등; 단일상품도 1행), " +
+    "delivery(배송), request(요청사항), content(상세내용 — file_photo=대표이미지 id 등), benefit(혜택). " +
+    "이미지는 먼저 upload_product_images 로 올려 받은 id 를 content.file_photo 등에 넣는다. " +
+    "정확한 필드 스펙은 guide(prosell://guide/llms.txt)·openapi 의 상품 스키마를 참고하라.",
+  {
+    origin: looseObj().describe("기본정보 — title(필수), option_type(필수), category/onoff 등"),
+    product: z.array(looseObj()).optional().describe("주문옵션 행 목록(옵션 조합별 가격/재고/코드). 단일상품도 최소 1행"),
+    delivery: looseObj().optional().describe("배송정보"),
+    request: looseObj().optional().describe("요청사항"),
+    content: looseObj().optional().describe("상세내용 — file_photo(대표이미지 id), 상세설명 등"),
+    benefit: looseObj().optional().describe("혜택정보"),
+  },
+  async (body) => {
+    try { return ok(await createProduct(body)); } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "update_product",
+  "상품을 수정한다(운영자). id 와 바꿀 섹션만 보낸다(create_product 와 같은 섹션 구조). " +
+    "origin.option_type 는 함께 보내는 것이 안전하다. 옵션 행 변경은 product 배열로.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("상품 id"),
+    origin: looseObj().optional(),
+    product: z.array(looseObj()).optional(),
+    delivery: looseObj().optional(),
+    request: looseObj().optional(),
+    content: looseObj().optional(),
+    benefit: looseObj().optional(),
+  },
+  async ({ id, ...body }) => {
+    try { return ok(await updateProduct(id, body)); } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "delete_product",
+  "상품을 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 상품 id") },
+  async ({ id }) => {
+    try { return ok(await deleteProduct(id)); } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "get_product_option",
+  "주문옵션 상세를 조회한다. 주문옵션 유니크키(옵션 행 id)로 단건 조회 — 가격/재고/옵션값/이미지 등.",
+  { id: z.union([z.number().int(), z.string()]).describe("주문옵션 유니크키(옵션 행 id)") },
+  async ({ id }) => {
+    try { return ok(await getProductOption(id)); } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "upload_product_images",
+  "상품 이미지를 업로드한다(운영자). 로컬 파일 경로(최대 10개)를 올려 file id 를 받는다. " +
+    "받은 items[].id 를 create_product/update_product 의 content.file_photo(대표)·file_list·" +
+    "file_gallery 또는 product[].photo 등 해당 field 에 넣어 상품과 연결한다.",
+  {
+    field: z.string().describe("대상 필드 — file_photo(대표) / file_list / file_gallery / photo / detail_photo / pc_description_photo / productsupload 등"),
+    files: z.array(z.string()).min(1).max(10).describe("업로드할 로컬 이미지 파일 경로 목록"),
+  },
+  async ({ field, files }) => {
+    try { return ok(await uploadProductImages(field, files)); } catch (e) { return fail(e.message); }
+  }
+);
+
+// ── 카테고리 ────────────────────────────────────────────────────────────────
+const listParams = {
+  page: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(1000).optional().describe("페이지당 건수(기본 10, 최대 1000)"),
+  id: z.string().optional().describe("id 단건 또는 콤마 구분 복수"),
+  title: z.string().optional().describe("이름 부분검색"),
+};
+
+server.tool(
+  "list_categories",
+  "상품 카테고리 목록을 조회한다. 응답 items[].origin.code 가 상품의 category 값으로 쓰인다.",
+  { ...listParams, code: z.string().optional().describe("카테고리 코드로 필터"), order: z.number().int().min(0).max(2).optional().describe("0=등록역순 1=위치순 2=위치역순") },
+  async (params) => { try { return ok(await listCategories(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_category",
+  "상품 카테고리를 등록한다(운영자). origin.num(1~4 깊이)·origin.title 필수. " +
+    "design 섹션으로 스킨/정렬 등 설정 가능(선택).",
+  {
+    origin: looseObj().describe("기본정보 — num(1~4 필수), title(필수), onoff/position/parent_id/title_s 등"),
+    design: looseObj().optional().describe("디자인 — pc/m 스킨·정렬·필터 노출 등"),
+  },
+  async (body) => { try { return ok(await createCategory(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_category",
+  "상품 카테고리를 수정한다(운영자). id 와 바꿀 섹션(origin/design)만 보낸다. num/parent_id 는 변경 불가.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("카테고리 id"),
+    origin: looseObj().optional().describe("title/title_s/onoff/position/allitem 등"),
+    design: looseObj().optional(),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateCategory(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_category",
+  "상품 카테고리를 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 카테고리 id") },
+  async ({ id }) => { try { return ok(await deleteCategory(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 공급자 ──────────────────────────────────────────────────────────────────
+server.tool(
+  "list_suppliers",
+  "공급자(매입처) 목록을 조회한다. id 는 상품 origin.supplier 값으로 쓰인다(기본 1).",
+  listParams,
+  async (params) => { try { return ok(await listSuppliers(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_supplier",
+  "공급자를 등록한다(운영자). 필수: title, uid, email, tel, warehouse_zipcode, warehouse_addr1, " +
+    "return_zipcode, return_addr1. 그 외 배송/반품/해외 설정은 선택.",
+  { body: looseObj().describe("공급자 정보 — 필수 필드(title/uid/email/tel/warehouse_zipcode/warehouse_addr1/return_zipcode/return_addr1) 포함") },
+  async ({ body }) => { try { return ok(await createSupplier(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_supplier",
+  "공급자 정보를 수정한다(운영자). id 와 바꿀 필드만 보낸다.",
+  { id: z.union([z.number().int(), z.string()]).describe("공급자 id"), body: looseObj().describe("바꿀 필드") },
+  async ({ id, body }) => { try { return ok(await updateSupplier(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_supplier",
+  "공급자를 삭제한다(운영자). 기본 공급자(id=1)는 삭제 불가.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 공급자 id") },
+  async ({ id }) => { try { return ok(await deleteSupplier(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 브랜드 (+이미지) ─────────────────────────────────────────────────────────
+server.tool(
+  "list_brands",
+  "브랜드 목록을 조회한다. id 는 상품 product[].brand 값으로 쓰인다. expand=images 로 이미지 포함.",
+  { ...listParams, expand: z.string().optional().describe("images 지정 시 브랜드 이미지 포함") },
+  async (params) => { try { return ok(await listBrands(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_brand",
+  "브랜드를 등록한다(운영자). title 필수(중복 불가). 로고가 있으면 먼저 upload_brand_image 로 올려 " +
+    "받은 id 를 image 에 넣는다.",
+  {
+    title: z.string().describe("브랜드명(필수, 중복 불가)"),
+    image: z.number().int().optional().describe("브랜드 이미지 id(upload_brand_image 결과)"),
+  },
+  async (body) => { try { return ok(await createBrand(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_brand",
+  "브랜드를 수정한다(운영자). id 와 바꿀 필드(title/image)만. 기본 브랜드(id<2)는 수정 불가.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("브랜드 id"),
+    title: z.string().optional(),
+    image: z.number().int().optional().describe("브랜드 이미지 id"),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateBrand(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_brand",
+  "브랜드를 삭제한다(운영자). 기본 브랜드(id<2)는 삭제 불가.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 브랜드 id") },
+  async ({ id }) => { try { return ok(await deleteBrand(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "upload_brand_image",
+  "브랜드 로고 이미지를 업로드한다(운영자). 로컬 파일 1개(JPEG/GIF/PNG). " +
+    "응답 items[0].id 를 create_brand/update_brand 의 image 로 넣는다.",
+  { file: z.string().describe("업로드할 로컬 이미지 파일 경로") },
+  async ({ file }) => { try { return ok(await uploadBrandImage(file)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_brand_image",
+  "브랜드 이미지를 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 브랜드 이미지 id") },
+  async ({ id }) => { try { return ok(await deleteBrandImage(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 추가주문옵션 ────────────────────────────────────────────────────────────
+const addoptionItems = z.array(z.object({
+  name: z.string().describe("옵션값 이름('|' 불가, 최대 200자)"),
+  price: z.number().int().min(0).optional().describe("추가금액"),
+})).optional();
+
+server.tool(
+  "list_addoptions",
+  "추가주문옵션(상품에 덧붙이는 선택형 옵션) 목록을 조회한다. id 는 상품 origin.addoption 값으로 쓰인다.",
+  listParams,
+  async (params) => { try { return ok(await listAddoptions(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_addoption",
+  "추가주문옵션을 등록한다(운영자). title 필수. options 로 옵션값(name/price) 목록을 넣는다.",
+  {
+    title: z.string().describe("추가옵션 제목(필수, 최대 50자)"),
+    req_type: z.number().int().min(0).max(1).optional().describe("0=선택 1=필수"),
+    options: addoptionItems.describe("옵션값 목록 [{name, price}]"),
+  },
+  async (body) => { try { return ok(await createAddoption(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_addoption",
+  "추가주문옵션을 수정한다(운영자). id 와 바꿀 필드만. options 를 보내면 옵션값 전체 교체.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("추가옵션 id"),
+    title: z.string().optional(),
+    req_type: z.number().int().min(0).max(1).optional(),
+    options: addoptionItems,
+  },
+  async ({ id, ...body }) => { try { return ok(await updateAddoption(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_addoption",
+  "추가주문옵션을 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 추가옵션 id") },
+  async ({ id }) => { try { return ok(await deleteAddoption(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 필터 색상 ───────────────────────────────────────────────────────────────
+server.tool(
+  "list_colors",
+  "필터(검색) 색상 목록을 조회한다. id 는 상품 product[].standard_color 값으로 쓰인다.",
+  listParams,
+  async (params) => { try { return ok(await listColors(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_colors",
+  "필터 색상을 등록한다(운영자). 여러 개를 한 번에 등록. 각 항목은 {title, color(6자리 hex, # 제외)}.",
+  {
+    items: z.array(z.object({
+      title: z.string().describe("색상명(최대 50자)"),
+      color: z.string().regex(/^[0-9a-fA-F]{6}$/).describe("색상 hex 6자리(# 없이, 예: ff0000)"),
+    })).min(1).describe("등록할 색상 목록"),
+  },
+  async ({ items }) => { try { return ok(await createColors(items)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_color",
+  "필터 색상을 수정한다(운영자). id 와 바꿀 필드(title/color)만.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("색상 id"),
+    title: z.string().optional(),
+    color: z.string().regex(/^[0-9a-fA-F]{6}$/).optional().describe("hex 6자리(# 없이)"),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateColor(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_color",
+  "필터 색상을 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 색상 id") },
+  async ({ id }) => { try { return ok(await deleteColor(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 필터 사이즈 ─────────────────────────────────────────────────────────────
+server.tool(
+  "list_sizes",
+  "필터(검색) 사이즈 목록을 조회한다. id 는 상품 product[].standard_size 값으로 쓰인다. ct(그룹) 필터 가능.",
+  { ...listParams, ct: z.number().int().optional().describe("사이즈 그룹(카테고리) id 로 필터") },
+  async (params) => { try { return ok(await listSizes(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_sizes",
+  "필터 사이즈를 등록한다(운영자). 두 방식 중 하나: " +
+    "(A) 새 그룹 — ct(새 그룹명) + items(사이즈명 배열), " +
+    "(B) 기존 그룹에 추가 — group(기존 그룹 id) + items(사이즈명 배열).",
+  {
+    ct: z.string().optional().describe("(방식 A) 새 사이즈 그룹명"),
+    group: z.number().int().optional().describe("(방식 B) 기존 그룹 id"),
+    items: z.array(z.string()).min(1).describe("사이즈명 목록(각 최대 50자)"),
+  },
+  async (body) => { try { return ok(await createSizes(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_size",
+  "필터 사이즈명을 수정한다(운영자). id 와 title 만(그룹 변경 불가).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("사이즈 id"),
+    title: z.string().describe("바꿀 사이즈명(최대 50자)"),
+  },
+  async ({ id, title }) => { try { return ok(await updateSize(id, { title })); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_size",
+  "필터 사이즈를 삭제한다(운영자). 그룹의 마지막 사이즈를 지우면 그룹도 함께 삭제된다.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 사이즈 id") },
+  async ({ id }) => { try { return ok(await deleteSize(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 아이콘 ──────────────────────────────────────────────────────────────────
+server.tool(
+  "list_icons",
+  "상품 아이콘(NEW/BEST 등 라벨) 목록을 조회한다. id 는 상품 content.icon 값으로 쓰인다. ct(1~4) 필터 가능.",
+  { ...listParams, ct: z.number().int().min(1).max(4).optional().describe("아이콘 분류(1~4)") },
+  async (params) => { try { return ok(await listIcons(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_icon",
+  "아이콘을 등록한다(운영자). ct(1~4)·title 필수, 이미지 파일 필수(JPEG/GIF/PNG). " +
+    "title 은 최대 8자.",
+  {
+    ct: z.number().int().min(1).max(4).describe("아이콘 분류(1~4)"),
+    title: z.string().describe("아이콘명(최대 8자)"),
+    onoff: z.number().int().min(0).max(1).optional().describe("1=사용 0=미사용"),
+    file: z.string().describe("아이콘 이미지 로컬 파일 경로(필수)"),
+  },
+  async ({ file, ...fields }) => { try { return ok(await createIcon(fields, file)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_icon",
+  "아이콘을 수정한다(운영자). id 와 바꿀 필드(ct/title/onoff). 이미지를 바꾸려면 file 경로를 함께 보낸다(선택).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("아이콘 id"),
+    ct: z.number().int().min(1).max(4).optional(),
+    title: z.string().optional().describe("최대 8자"),
+    onoff: z.number().int().min(0).max(1).optional(),
+    file: z.string().optional().describe("교체할 이미지 로컬 파일 경로(선택)"),
+  },
+  async ({ id, file, ...fields }) => { try { return ok(await updateIcon(id, fields, file)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_icon",
+  "아이콘을 삭제한다(운영자). 상품/회원등급/게시판에서 사용 중이면 삭제 불가.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 아이콘 id") },
+  async ({ id }) => { try { return ok(await deleteIcon(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 공통 템플릿(상세내용 서식) ────────────────────────────────────────────────
+server.tool(
+  "list_templates",
+  "공통 템플릿(상세페이지 배송/교환·반품/AS 등 공통 영역 서식) 목록을 조회한다. " +
+    "id 는 상품 content 의 delivery_template/return_template/as_template 등에 쓰인다.",
+  listParams,
+  async (params) => { try { return ok(await listTemplates(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_template",
+  "공통 템플릿을 등록한다(운영자). device(1=PC 2=모바일)·ct(영역: 202/203/204/206/1)·" +
+    "pc_mode·m_mode(1/2)·title·pc_content·m_content.",
+  {
+    device: z.number().int().describe("1=PC 2=모바일"),
+    ct: z.number().int().describe("영역 코드(202/203/204/206/1)"),
+    pc_mode: z.number().int().describe("PC 모드(1/2)"),
+    m_mode: z.number().int().describe("모바일 모드(1/2)"),
+    title: z.string().describe("템플릿명(최대 100자)"),
+    pc_content: z.string().describe("PC 내용(HTML)"),
+    m_content: z.string().describe("모바일 내용(HTML)"),
+  },
+  async (body) => { try { return ok(await createTemplate(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_template",
+  "공통 템플릿을 수정한다(운영자). id 와 바꿀 필드만.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("템플릿 id"),
+    device: z.number().int().optional(),
+    ct: z.number().int().optional(),
+    pc_mode: z.number().int().optional(),
+    m_mode: z.number().int().optional(),
+    title: z.string().optional(),
+    pc_content: z.string().optional(),
+    m_content: z.string().optional(),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateTemplate(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_template",
+  "공통 템플릿을 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 템플릿 id") },
+  async ({ id }) => { try { return ok(await deleteTemplate(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 서식(상품정보제공고시) — 조회 전용 ───────────────────────────────────────
+server.tool(
+  "list_information",
+  "상품정보제공고시 서식 목록을 조회한다(조회 전용). 응답 informations[].id 를 상품 " +
+    "content.information.id 로 연결한다.",
+  listParams,
+  async (params) => { try { return ok(await listInformation(params)); } catch (e) { return fail(e.message); } }
 );
 
 // 시작 시 PROSELL_SHOP 이 주어지면 저장(다음 실행부터 생략 가능)

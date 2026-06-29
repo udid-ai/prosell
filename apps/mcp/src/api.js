@@ -1,5 +1,7 @@
 // 쇼핑몰 데이터 호출. 비회원(client_id)으로 상품을 조회한다.
 import { apiBase, clientId, credentials, tokens, saveTokens, clearTokens } from "./config.js";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 
 /** 목록용 경량 expand — 이미지/옵션 전체 fetch 회피 (api-spec/llms.txt 의 성능 규칙) */
 export const LIST_EXPAND = "origin,benefit,images_thumb,product_first";
@@ -330,6 +332,108 @@ export async function updateTracking(items) {
   });
   return jsonOrThrow(res, "운송장 수정 실패");
 }
+
+// ── 상품·부가정보 관리(운영자) — CRUD/업로드 공통 ─────────────────────────────
+// 목록·단건 조회(GET)는 백엔드가 isClient() 라 client_id 헤더로, 생성·수정·삭제는
+// isToken() 라 Bearer 로 호출한다. (connect 로 client_id, login 으로 Bearer 가 준비됨)
+async function getClient(path, params = {}, fallback) {
+  const u = new URL(`${apiBase()}/${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
+  }
+  const res = await fetch(u, { headers: authHeaders() });
+  return jsonOrThrow(res, fallback);
+}
+async function putById(path, id, body, fallback) {
+  const res = await fetch(`${apiBase()}/${path}/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: await bearerHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res, fallback);
+}
+// multipart 업로드(운영자). fields(일반 폼값) + filePaths(로컬 경로) 를 FormData 로 전송.
+// 백엔드는 $_FILES 를 키 이름 무관하게 순회하므로 file0,file1.. 로 붙인다. Content-Type 은
+// fetch 가 boundary 와 함께 자동 설정(직접 지정 금지).
+async function uploadFiles(path, fields, filePaths, fallback) {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (v !== undefined && v !== null && v !== "") form.append(k, String(v));
+  }
+  const paths = filePaths == null ? [] : Array.isArray(filePaths) ? filePaths : [filePaths];
+  let i = 0;
+  for (const p of paths) {
+    let buf;
+    try { buf = await readFile(p); }
+    catch { throw new Error(`${fallback}: 파일을 읽을 수 없습니다 (${p})`); }
+    form.append(`file${i++}`, new Blob([buf]), basename(p));
+  }
+  const res = await fetch(`${apiBase()}/${path}`, { method: "POST", headers: await bearerHeaders(), body: form });
+  return jsonOrThrow(res, fallback);
+}
+
+// 상품(관리) — 조회는 기존 listProducts/getProduct(client). 등록·수정·삭제는 운영자.
+export const createProduct = (body) => postJson("products", body, "상품 등록 실패");
+export const updateProduct = (id, body) => putById("products", id, body, "상품 수정 실패");
+export const deleteProduct = (id) => deleteById("products", id, "상품 삭제 실패");
+/** 주문옵션 상세 — GET /products/options/{id}. 옵션 유니크키로 단건 조회. */
+export const getProductOption = (id) => getClient(`products/options/${encodeURIComponent(id)}`, {}, "주문옵션 조회 실패");
+/** 상품 이미지 업로드 — POST /products/images. field=대상(file_photo 등), files=로컬경로(최대 10). */
+export const uploadProductImages = (field, files) => uploadFiles("products/images", { field }, files, "상품 이미지 업로드 실패");
+
+// 카테고리
+export const listCategories = (params = {}) => getClient("categories", params, "카테고리 조회 실패");
+export const createCategory = (body) => postJson("categories", body, "카테고리 등록 실패");
+export const updateCategory = (id, body) => putById("categories", id, body, "카테고리 수정 실패");
+export const deleteCategory = (id) => deleteById("categories", id, "카테고리 삭제 실패");
+
+// 공급자
+export const listSuppliers = (params = {}) => getClient("supplier", params, "공급자 조회 실패");
+export const createSupplier = (body) => postJson("supplier", body, "공급자 등록 실패");
+export const updateSupplier = (id, body) => putById("supplier", id, body, "공급자 수정 실패");
+export const deleteSupplier = (id) => deleteById("supplier", id, "공급자 삭제 실패");
+
+// 브랜드 (+이미지)
+export const listBrands = (params = {}) => getClient("brand", params, "브랜드 조회 실패");
+export const createBrand = (body) => postJson("brand", body, "브랜드 등록 실패");
+export const updateBrand = (id, body) => putById("brand", id, body, "브랜드 수정 실패");
+export const deleteBrand = (id) => deleteById("brand", id, "브랜드 삭제 실패");
+/** 브랜드 이미지 업로드 — POST /brand/images. 단일 파일. 응답 items[0].id 를 createBrand 의 image 로. */
+export const uploadBrandImage = (file) => uploadFiles("brand/images", {}, file, "브랜드 이미지 업로드 실패");
+export const deleteBrandImage = (id) => deleteById("brand/images", id, "브랜드 이미지 삭제 실패");
+
+// 추가주문옵션
+export const listAddoptions = (params = {}) => getClient("addoptions", params, "추가주문옵션 조회 실패");
+export const createAddoption = (body) => postJson("addoptions", body, "추가주문옵션 등록 실패");
+export const updateAddoption = (id, body) => putById("addoptions", id, body, "추가주문옵션 수정 실패");
+export const deleteAddoption = (id) => deleteById("addoptions", id, "추가주문옵션 삭제 실패");
+
+// 필터 색상 — 등록은 items:[{title,color}] 묶음, 수정은 단건(title/color)
+export const listColors = (params = {}) => getClient("colors", params, "필터 색상 조회 실패");
+export const createColors = (items) => postJson("colors", { items }, "필터 색상 등록 실패");
+export const updateColor = (id, body) => putById("colors", id, body, "필터 색상 수정 실패");
+export const deleteColor = (id) => deleteById("colors", id, "필터 색상 삭제 실패");
+
+// 필터 사이즈 — 등록은 새 그룹(ct) 또는 기존 그룹(group)에 items:[제목..] 추가, 수정은 단건(title)
+export const listSizes = (params = {}) => getClient("sizes", params, "필터 사이즈 조회 실패");
+export const createSizes = (body) => postJson("sizes", body, "필터 사이즈 등록 실패");
+export const updateSize = (id, body) => putById("sizes", id, body, "필터 사이즈 수정 실패");
+export const deleteSize = (id) => deleteById("sizes", id, "필터 사이즈 삭제 실패");
+
+// 아이콘 — 등록·수정은 multipart(ct/title/onoff + 이미지). 수정은 POST /icons/{id}(백엔드 내부 PUT).
+export const listIcons = (params = {}) => getClient("icons", params, "아이콘 조회 실패");
+export const createIcon = (fields, file) => uploadFiles("icons", fields, file, "아이콘 등록 실패");
+export const updateIcon = (id, fields, file) => uploadFiles(`icons/${encodeURIComponent(id)}`, fields, file, "아이콘 수정 실패");
+export const deleteIcon = (id) => deleteById("icons", id, "아이콘 삭제 실패");
+
+// 공통 템플릿(상세내용 서식: 배송/교환반품/AS 등)
+export const listTemplates = (params = {}) => getClient("products/template", params, "템플릿 조회 실패");
+export const createTemplate = (body) => postJson("products/template", body, "템플릿 등록 실패");
+export const updateTemplate = (id, body) => putById("products/template", id, body, "템플릿 수정 실패");
+export const deleteTemplate = (id) => deleteById("products/template", id, "템플릿 삭제 실패");
+
+// 서식(상품정보제공고시) — 목록 조회만 제공(등록/수정/삭제 미지원). 응답 키는 informations.
+export const listInformation = (params = {}) => getClient("products/information", params, "서식 조회 실패");
 
 /** provision_code → 클라이언트 자격증명 교환 (서버↔서버, 일회성) */
 export async function exchangeProvisionCode(code) {

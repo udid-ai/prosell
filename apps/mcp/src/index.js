@@ -77,7 +77,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.20.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.21.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -902,15 +902,35 @@ server.tool(
 
 server.tool(
   "upload_product_images",
-  "상품 이미지를 업로드한다(운영자). 로컬 파일 경로(최대 10개)를 올려 file id 를 받는다. " +
-    "받은 items[].id 를 create_product/update_product 의 content.file_photo(대표)·file_list·" +
-    "file_gallery 또는 product[].photo 등 해당 field 에 넣어 상품과 연결한다.",
+  "상품 이미지를 업로드해 **파일 유니크키(items[].id)** 를 받는다(운영자). 받은 id 를 create_product/update_product 의 " +
+    "content.file_photo(대표·단일)·file_list(최대2,콤마)·file_gallery(최대10,콤마)·pc/m_description_photo(콤마) 등, " +
+    "또는 주문옵션 이미지는 field=photo 로 올려 product[].photo 에 넣어 연결한다.\n" +
+    "★입력 방식 2가지(합쳐 최대 10):\n" +
+    "  • images: [{data(base64), name}] — **이 방식을 우선 사용**. 사용자가 채팅에 첨부한 이미지나 " +
+    "지정한 윈도우 로컬 폴더의 파일을 에이전트가 읽어 base64 로 인코딩해 넣는다(파일명은 name). " +
+    "MCP 서버가 외부(원격/IDC)에 있어도 바이트가 전달되어 업로드된다.\n" +
+    "  • files: [로컬경로] — **MCP 서버가 그 경로의 파일을 직접 읽을 수 있을 때만**(로컬 stdio 배포). " +
+    "원격 MCP 면 사용자 로컬 PC 경로를 읽지 못하므로 쓰지 말 것.\n" +
+    "둘 다 어려우면 로컬에서 백엔드로 직접 multipart 업로드(curl/Postman) 후 id 만 받아 상품 등록/수정에 써도 된다.",
   {
-    field: z.string().describe("대상 필드 — file_photo(대표) / file_list / file_gallery / photo / detail_photo / pc_description_photo / productsupload 등"),
-    files: z.array(z.string()).min(1).max(10).describe("업로드할 로컬 이미지 파일 경로 목록"),
+    field: z.enum([
+      "file_photo", "file_list", "file_gallery",
+      "pc_description_photo", "m_description_photo",
+      "pc_information_photo", "m_information_photo",
+      "pc_delivery_photo", "m_delivery_photo",
+      "pc_return_photo", "m_return_photo",
+      "pc_as_photo", "m_as_photo",
+      "pc_header_photo", "m_header_photo",
+      "productsupload", "photo", "detail_photo", "detail_photo_m",
+    ]).describe("대상 필드 — file_photo(대표) / file_list / file_gallery / pc_description_photo(상세) / photo(주문옵션) 등"),
+    images: z.array(z.object({
+      data: z.string().describe("이미지 바이트를 base64 로 인코딩한 문자열(data:...;base64, 접두어 있어도 됨)"),
+      name: z.string().optional().describe("파일명(확장자 포함, 예: 1.png)"),
+    })).max(10).optional().describe("이미지 바이트(base64) 목록 — 채팅 첨부/로컬 폴더 파일을 에이전트가 읽어 전달(원격 MCP 권장)"),
+    files: z.array(z.string()).max(10).optional().describe("로컬 파일 경로 목록 — MCP 서버가 직접 읽을 수 있을 때만(로컬 stdio 배포)"),
   },
-  async ({ field, files }) => {
-    try { return ok(await uploadProductImages(field, files)); } catch (e) { return fail(e.message); }
+  async ({ field, images, files }) => {
+    try { return ok(await uploadProductImages(field, { images, files })); } catch (e) { return fail(e.message); }
   }
 );
 

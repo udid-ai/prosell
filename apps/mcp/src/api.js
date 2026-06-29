@@ -488,8 +488,36 @@ export const updateProduct = (id, body) => putById("products", id, body, "상품
 export const deleteProduct = (id) => deleteById("products", id, "상품 삭제 실패");
 /** 주문옵션 상세 — GET /products/options/{id}. 옵션 유니크키로 단건 조회. */
 export const getProductOption = (id) => getClient(`products/options/${encodeURIComponent(id)}`, {}, "주문옵션 조회 실패");
-/** 상품 이미지 업로드 — POST /products/images. field=대상(file_photo 등), files=로컬경로(최대 10). */
-export const uploadProductImages = (field, files) => uploadFiles("products/images", { field }, files, "상품 이미지 업로드 실패");
+/** 상품 이미지 업로드 — POST /products/images (multipart). field=대상(file_photo 등).
+ *  두 입력 방식(혼용 가능, 합쳐 최대 10):
+ *   - files:  로컬 파일 경로 배열 — **MCP 서버 프로세스가 읽을 수 있을 때만**(로컬 stdio 배포).
+ *   - images: [{data(base64), name}] — 바이트를 직접 전달(원격 MCP 배포에서 로컬/첨부 이미지를 보낼 때).
+ *  응답 items[].id 가 파일 유니크키 → 상품 content.<이미지필드> 또는 product[].photo 에 넣는다. */
+export async function uploadProductImages(field, { files, images } = {}) {
+  const form = new FormData();
+  form.append("field", field);
+  let n = 0;
+  const paths = files == null ? [] : Array.isArray(files) ? files : [files];
+  for (const p of paths) {
+    let buf;
+    try { buf = await readFile(p); }
+    catch { throw new Error(`상품 이미지 업로드 실패: 파일을 읽을 수 없습니다 (${p}). 원격 MCP면 로컬 경로 대신 images(base64)로 보내세요.`); }
+    form.append(`file${n++}`, new Blob([buf]), basename(p));
+  }
+  for (const img of images || []) {
+    const b64 = img?.data ?? img?.data_base64;
+    if (!b64) continue;
+    let buf;
+    try { buf = Buffer.from(String(b64).replace(/^data:[^;]+;base64,/, ""), "base64"); }
+    catch { throw new Error("상품 이미지 업로드 실패: base64 디코딩 오류"); }
+    if (!buf.length) throw new Error("상품 이미지 업로드 실패: 빈 이미지 데이터");
+    form.append(`file${n++}`, new Blob([buf]), img.name || `image_${n}.png`);
+  }
+  if (n === 0) throw new Error("상품 이미지 업로드 실패: 보낼 파일이 없습니다 (files 로컬경로 또는 images base64 중 하나 필요).");
+  if (n > 10) throw new Error("상품 이미지 업로드 실패: 최대 10개까지 업로드할 수 있습니다.");
+  const res = await fetch(`${apiBase()}/products/images`, { method: "POST", headers: await bearerHeaders(), body: form });
+  return jsonOrThrow(res, "상품 이미지 업로드 실패");
+}
 
 // 카테고리
 export const listCategories = (params = {}) => getClient("categories", params, "카테고리 조회 실패");

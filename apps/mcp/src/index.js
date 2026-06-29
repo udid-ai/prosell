@@ -71,7 +71,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.6.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.8.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -495,7 +495,7 @@ server.tool(
     period_end: z.string().optional().describe("YYYY-MM-DD"),
     ono_ids: z.string().optional().describe("주문서 유니크키(ono) 콤마 구분"),
     rno_ids: z.string().optional().describe("반품번호(rno) 콤마 구분"),
-    ref_state: z.number().int().optional().describe("반품상태 코드"),
+    ref_state: z.number().int().optional().describe("반품상태로 필터: 10=반품접수 20=회수중 21=검수중/수거완료 22=결제요청 30=반품완료"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   },
@@ -513,8 +513,11 @@ server.tool(
     ref_ct: z.string().describe("반품 사유 — get_claim_reasons 의 refund 카테고리 중 선택"),
     ref_content: z.string().optional().describe("반품 상세 내용"),
   },
-  async (body) => {
-    try { return ok(await createRefund(body)); } catch (e) { return fail(e.message); }
+  async ({ ono, items, ref_ct, ref_content }) => {
+    // 백엔드 규격: 사유는 refund 객체로 중첩 — { ono, items, refund:{ref_ct, ref_content} }
+    const refund = { ref_ct };
+    if (ref_content !== undefined) refund.ref_content = ref_content;
+    try { return ok(await createRefund({ ono, items, refund })); } catch (e) { return fail(e.message); }
   }
 );
 
@@ -526,7 +529,7 @@ server.tool(
     "사유는 get_claim_reasons 의 refund 중 선택.",
   {
     rno: z.union([z.number().int(), z.string()]).describe("반품번호(rno) — list_refunds 의 refund.rno"),
-    ref_state: z.number().int().optional().describe("반품 상태 코드"),
+    ref_state: z.number().int().optional().describe("반품상태: 10=반품접수 20=회수중 21=검수중/수거완료 22=결제요청 30=반품완료"),
     ref_ct: z.string().optional().describe("반품 사유(get_claim_reasons 의 refund 중 선택)"),
     ref_content: z.string().optional().describe("반품 상세 내용"),
     ref_name: z.string().optional().describe("반품자명"),
@@ -558,7 +561,7 @@ server.tool(
     period_end: z.string().optional().describe("YYYY-MM-DD"),
     ono_ids: z.string().optional().describe("주문서 유니크키(ono) 콤마 구분"),
     eno_ids: z.string().optional().describe("교환번호(eno) 콤마 구분"),
-    exc_state: z.number().int().optional().describe("교환상태 코드"),
+    exc_state: z.number().int().optional().describe("교환상태로 필터: 10=교환접수 20=회수중 21=검수중/수거완료 22=결제요청 29=재배송중 30=교환완료"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   },
@@ -576,8 +579,11 @@ server.tool(
     exc_ct: z.string().describe("교환 사유 — get_claim_reasons 의 exchange 카테고리 중 선택"),
     exc_content: z.string().optional().describe("교환 상세 내용"),
   },
-  async (body) => {
-    try { return ok(await createExchange(body)); } catch (e) { return fail(e.message); }
+  async ({ ono, items, exc_ct, exc_content }) => {
+    // 백엔드 규격: 사유는 exchange 객체로 중첩 — { ono, items, exchange:{exc_ct, exc_content} }
+    const exchange = { exc_ct };
+    if (exc_content !== undefined) exchange.exc_content = exc_content;
+    try { return ok(await createExchange({ ono, items, exchange })); } catch (e) { return fail(e.message); }
   }
 );
 
@@ -589,7 +595,7 @@ server.tool(
     "사유는 get_claim_reasons 의 exchange 중 선택.",
   {
     eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno) — list_exchanges 의 exchange.eno"),
-    exc_state: z.number().int().optional().describe("교환 상태 코드"),
+    exc_state: z.number().int().optional().describe("교환상태: 10=교환접수 20=회수중 21=검수중/수거완료 22=결제요청 29=재배송중 30=교환완료"),
     exc_ct: z.string().optional().describe("교환 사유(get_claim_reasons 의 exchange 중 선택)"),
     exc_content: z.string().optional().describe("교환 상세 내용"),
     exc_name: z.string().optional().describe("교환자명"),
@@ -622,7 +628,7 @@ server.tool(
     period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD"),
     ono_ids: z.string().optional().describe("주문서 유니크키(ono) 콤마 구분"),
     cno_ids: z.string().optional().describe("취소번호(cno) 콤마 구분"),
-    can_state: z.number().int().optional().describe("취소상태 코드로 필터"),
+    can_state: z.number().int().min(0).max(2).optional().describe("취소상태로 필터: 0=취소접수 1=취소중 2=취소완료"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   },
@@ -673,7 +679,7 @@ server.tool(
     "이미 취소완료(2)된 내역은 상태를 변경할 수 없다. 사유는 get_claim_reasons 의 cancel 중 선택.",
   {
     cno: z.union([z.number().int(), z.string()]).describe("취소번호(cno) — list_cancels 의 cancel.cno"),
-    can_state: z.number().int().min(0).max(2).optional().describe("0=취소접수 2=취소완료(설정 시 실제 환불 완료 실행)"),
+    can_state: z.number().int().min(0).max(2).optional().describe("취소상태: 0=취소접수 1=취소중 2=취소완료(=PG승인취소 실행, 되돌릴 수 없음)"),
     can_ct: z.string().optional().describe("취소 사유(get_claim_reasons 의 cancel 중 선택)"),
     can_content: z.string().optional().describe("취소 상세 내용"),
     can_bank_code: z.string().optional().describe("(무통장 환불) 은행코드"),

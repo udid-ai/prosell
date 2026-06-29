@@ -300,7 +300,7 @@ async function deleteById(path, id, fallback) {
 
 /** 반품내역 조회 — GET /order/refund (운영자). */
 export const listRefunds = (params = {}) => getJson("order/refund", params, "반품내역 조회 실패");
-/** 반품 접수 — POST /order/refund. body:{ono, items:[{prno,quantity}], ref_ct(사유), ref_content?} */
+/** 반품 접수 — POST /order/refund. 사유는 중첩: body:{ono, items:[{prno,quantity}], refund:{ref_ct, ref_content?}} */
 export const createRefund = (body) => postJson("order/refund", body, "반품 접수 실패");
 /** 반품 수정 — PUT /order/refund/{rno} (운영자). 본문은 중첩 구조: { refund:{ref_state,ref_ct,...},
  *  addressInfo:{ref_ret_*, 회수 운송장 등} }. 보낸 필드만 갱신. */
@@ -310,7 +310,7 @@ export const rejectRefund = (rno) => deleteById("order/refund", rno, "반품 거
 
 /** 교환내역 조회 — GET /order/exchange (운영자). */
 export const listExchanges = (params = {}) => getJson("order/exchange", params, "교환내역 조회 실패");
-/** 교환 접수 — POST /order/exchange. body:{ono, items:[{prno,quantity}], exc_ct(사유), exc_content?} */
+/** 교환 접수 — POST /order/exchange. 사유는 중첩: body:{ono, items:[{prno,quantity}], exchange:{exc_ct, exc_content?}} */
 export const createExchange = (body) => postJson("order/exchange", body, "교환 접수 실패");
 /** 교환 수정 — PUT /order/exchange/{eno} (운영자). 본문 중첩: { exchange:{exc_state,exc_ct,...},
  *  addressInfo:{exc_ret_*, 회수 운송장 등} }. 보낸 필드만 갱신. */

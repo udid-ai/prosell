@@ -44,6 +44,8 @@ import {
   listCouponIssues, issueCoupon, deleteCouponIssue,
   listPoints, createPoint, updatePoint, deletePoint,
   getShopCompany, updateShopCompany,
+  listBoard, getBoardPost, createBoardPost, updateBoardPost, deleteBoardPost,
+  replyBoardPost, deleteBoardReply, getBoardSetup, uploadBoardFiles,
 } from "./api.js";
 import { runConnect } from "./connect.js";
 import { runLogin } from "./login.js";
@@ -69,7 +71,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.5.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.6.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -1844,6 +1846,137 @@ server.tool(
     as_url: z.string().optional().describe("AS 안내 URL"),
   },
   async (data) => { try { return ok(await updateShopCompany(data)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 통합 게시판 (board_type=1, 운영자) ────────────────────────────────────────
+// 쇼핑몰 설정 board_type=1(통합 게시판)일 때 사용. 공지/1:1문의/FAQ/상품문의/구매후기가
+// 단일 게시판으로 통합되어 board_type 코드(notice|qna|faq|inquiry|review)로 구분된다.
+// (board_type=0 기본형이면 기존 개별 도구 — list_notices/list_faqs/list_reviews/문의 도구 — 를 쓴다.)
+server.tool(
+  "board_setup",
+  "통합 게시판(board_type=1) 설정을 조회한다(운영자). 5개 게시판(notice/qna/faq/inquiry/review)의 " +
+    "코드·이름·카테고리 목록·기능 사용여부(댓글/상품/별점)를 반환한다. 게시글 등록/필터 전에 호출해 " +
+    "board_type 코드와 카테고리를 확인한다.",
+  {},
+  async () => { try { return ok(await getBoardSetup()); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "list_board",
+  "통합 게시판 글 목록을 조회한다(운영자, board_type=1). 5개 게시판을 한 번에 조회하며 " +
+    "board_types(notice/qna/faq/inquiry/review)·카테고리·별점·답변상태로 필터한다. " +
+    "각 항목: id·board_type·category·title·writer_name·state(1대기/2완료/3추가문의)·reply_count·score.",
+  {
+    board_types: z.string().optional().describe("게시판 코드 콤마구분(notice,qna,faq,inquiry,review)"),
+    category: z.string().optional().describe("카테고리로 필터"),
+    score: z.number().int().min(1).max(5).optional().describe("별점 필터(구매후기)"),
+    states: z.string().optional().describe("답변상태 콤마구분(1=대기,2=완료,3=추가문의)"),
+    notice: z.number().int().min(0).max(1).optional().describe("1=상단고정만"),
+    best: z.number().int().min(0).max(1).optional().describe("1=베스트만"),
+    keyword: z.enum(["title", "content", "uid", "writer_name"]).optional().describe("검색 필드"),
+    q: z.string().optional().describe("검색어(keyword 와 함께)"),
+    period: z.enum(["dt", "update_dt"]).optional().describe("기간 기준(기본 dt)"),
+    period_start: z.string().optional().describe("YYYY-MM-DD"),
+    period_end: z.string().optional().describe("YYYY-MM-DD"),
+    order: z.number().int().min(1).max(4).optional().describe("1=최신 2=오래된순 3=댓글많은순 4=조회순"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listBoard(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "get_board_post",
+  "통합 게시판 글 상세를 조회한다(운영자). 본문·첨부·상품·댓글(답변)까지 포함.",
+  { id: z.union([z.number().int(), z.string()]).describe("게시글 번호(list_board 의 id)") },
+  async ({ id }) => { try { return ok(await getBoardPost(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "answer_board_post",
+  "통합 게시판 글에 운영자 답변(댓글)을 등록한다(운영자). 답변자는 로그인 운영자로 자동 등록되고 " +
+    "게시글이 답변완료(state=2)로 바뀐다. 1:1문의·상품문의 답변에 사용.",
+  {
+    article_id: z.union([z.number().int(), z.string()]).describe("게시글 번호"),
+    content: z.string().describe("답변 내용"),
+    photo: z.string().optional().describe("첨부 file id 콤마구분(upload_board_files 결과)"),
+  },
+  async ({ article_id, content, photo }) => {
+    try { return ok(await replyBoardPost({ article_id, content, ...(photo ? { photo } : {}) })); }
+    catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "delete_board_reply",
+  "통합 게시판 답변(댓글)을 삭제한다(운영자). 삭제 후 게시글 답변상태가 재계산된다.",
+  { id: z.union([z.number().int(), z.string()]).describe("답변(댓글) id") },
+  async ({ id }) => { try { return ok(await deleteBoardReply(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_board_post",
+  "통합 게시판 글을 등록한다(운영자 작성). board_type(게시판 코드)·title·content·writer_name 필수. " +
+    "카테고리는 board_setup 의 categories 중 선택. 상품문의·후기는 products_id/product_id, 후기는 score(1~5). " +
+    "첨부는 먼저 upload_board_files 로 올려 photo 에 콤마구분 id 를 넣는다.",
+  {
+    board_type: z.enum(["notice", "qna", "faq", "inquiry", "review"]).describe("게시판 코드"),
+    title: z.string().describe("제목"),
+    content: z.string().describe("내용(HTML 가능)"),
+    writer_name: z.string().describe("작성자명"),
+    category: z.string().optional().describe("카테고리(board_setup 참조)"),
+    score: z.number().int().min(0).max(5).optional().describe("별점(구매후기 1~5)"),
+    products_id: z.number().int().optional().describe("상품 id(상품문의/후기)"),
+    product_id: z.number().int().optional().describe("옵션 id(상품문의/후기)"),
+    secret: z.number().int().min(0).max(1).optional().describe("1=비밀글"),
+    notice: z.number().int().min(0).max(1).optional().describe("1=상단고정"),
+    best: z.number().int().min(0).max(1).optional().describe("1=베스트"),
+    url: z.string().optional().describe("외부 링크"),
+    video_url: z.string().optional().describe("동영상 URL"),
+    photo: z.string().optional().describe("첨부 file id 콤마구분"),
+    uid: z.string().optional().describe("작성자 아이디(선택)"),
+    dt: z.string().optional().describe("작성일시 YYYY-MM-DD HH:MM:SS (생략 시 현재)"),
+  },
+  async (body) => { try { return ok(await createBoardPost(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_board_post",
+  "통합 게시판 글을 수정한다(운영자). id 와 바꿀 필드만(create_board_post 와 같은 필드).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("게시글 번호"),
+    board_type: z.enum(["notice", "qna", "faq", "inquiry", "review"]).optional(),
+    title: z.string().optional(),
+    content: z.string().optional(),
+    writer_name: z.string().optional(),
+    category: z.string().optional(),
+    score: z.number().int().min(0).max(5).optional(),
+    products_id: z.number().int().optional(),
+    product_id: z.number().int().optional(),
+    secret: z.number().int().min(0).max(1).optional(),
+    notice: z.number().int().min(0).max(1).optional(),
+    best: z.number().int().min(0).max(1).optional(),
+    url: z.string().optional(),
+    video_url: z.string().optional(),
+    photo: z.string().optional(),
+    dt: z.string().optional().describe("YYYY-MM-DD HH:MM:SS"),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateBoardPost(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_board_post",
+  "통합 게시판 글을 삭제한다(운영자). 댓글·첨부도 함께 정리되고 후기/문의 카운터가 보정된다.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 게시글 번호") },
+  async ({ id }) => { try { return ok(await deleteBoardPost(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "upload_board_files",
+  "통합 게시판 첨부파일을 업로드한다(운영자). 로컬 파일(최대 5). items[].id 를 " +
+    "create_board_post/update_board_post/answer_board_post 의 photo(콤마구분)로 넣는다.",
+  { files: z.array(z.string()).min(1).max(5).describe("업로드할 로컬 파일 경로(최대 5)") },
+  async ({ files }) => { try { return ok(await uploadBoardFiles(files)); } catch (e) { return fail(e.message); } }
 );
 
 // 시작 시 PROSELL_SHOP 이 주어지면 저장(다음 실행부터 생략 가능)

@@ -558,6 +558,22 @@ export async function updateShopCompany(data) {
   return jsonOrThrow(res, "기본정보 수정 실패");
 }
 
+// ── 통합 게시판(board_type=1) (운영자) — isToken()=admin ────────────────────────
+// 쇼핑몰 설정 board_type=1 일 때 공지/1:1문의/FAQ/상품문의/구매후기가 단일 테이블로 통합된다.
+// board_type 코드: notice|qna|faq|inquiry|review. (board_type=0 기본형은 기존 개별 도구 사용)
+export const listBoard = (params = {}) => getJson("board", params, "게시판 조회 실패");
+export const getBoardPost = (id) => getJson(`board/${encodeURIComponent(id)}`, {}, "게시글 조회 실패");
+export const createBoardPost = (body) => postJson("board", body, "게시글 등록 실패");
+export const updateBoardPost = (id, body) => putById("board", id, body, "게시글 수정 실패");
+export const deleteBoardPost = (id) => deleteById("board", id, "게시글 삭제 실패");
+/** 운영자 답변(댓글) 등록 — POST /board/reply. 작성자는 토큰 운영자. 게시글을 답변완료로. */
+export const replyBoardPost = (body) => postJson("board/reply", body, "답변 등록 실패");
+export const deleteBoardReply = (id) => deleteById("board/reply", id, "답변 삭제 실패");
+/** 게시판 설정 조회 — GET /board/setup. 5개 게시판 정의·카테고리·기능 사용여부. */
+export const getBoardSetup = () => getJson("board/setup", {}, "게시판 설정 조회 실패");
+/** 게시판 첨부 업로드 — POST /board/upload(최대 5). items[].id 를 photo(콤마구분)로 연결. */
+export const uploadBoardFiles = (files) => uploadFiles("board/upload", {}, files, "게시판 파일 업로드 실패");
+
 /** provision_code → 클라이언트 자격증명 교환 (서버↔서버, 일회성) */
 export async function exchangeProvisionCode(code) {
   const res = await fetch(`${apiBase()}/oauth/register/exchange`, {

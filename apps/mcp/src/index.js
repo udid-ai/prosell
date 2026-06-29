@@ -72,7 +72,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.14.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.16.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -488,6 +488,21 @@ const claimItems = z
   )
   .min(1);
 
+// 교환 전용 — 항목별 교환받을 상품(exc_product_id)으로 동일/다른 상품 교환을 결정.
+const exchangeItems = z
+  .array(
+    z.object({
+      prno: z.union([z.number().int(), z.string()]).describe("상품주문번호(prno)"),
+      quantity: z.number().int().min(1).describe("교환 수량(주문 수량 이하)"),
+      exc_product_id: z.number().int().optional().describe(
+        "교환받을 **주문옵션 id**(같은 상품페이지 products_id 안의 다른 옵션). 생략하거나 원본과 같으면 **동일옵션 교환**, " +
+          "다른 옵션 id 면 **다른옵션 교환**. 다른 옵션으로 바꿀 때는 get_product(products_id, expand=product) 로 그 상품의 " +
+          "주문옵션 목록(product[].id/옵션명/가격/재고)을 조회해 사용자가 고른 옵션의 id 를 넣는다."
+      ),
+    })
+  )
+  .min(1);
+
 server.tool(
   "list_refunds",
   "반품내역 목록을 조회한다(운영자). 결과의 refund.rno=반품번호. " +
@@ -621,16 +636,19 @@ server.tool(
 server.tool(
   "create_exchange",
   "교환 접수 — 주문(ono)의 상품(prno·수량)을 교환요청한다(운영자). 사유(exc_ct) 필수. " +
-    "★배송비 청구를 정하거나 사용자에게 묻기 전에, 반드시 먼저 get_claim_preview(ono)으로 " +
-    "'구매 시 배송비 OO원'을 사용자에게 안내한 뒤 진행하라. " +
-    "교환 비용(구매자 청구)을 정하려면 exc_del_price/exc_ret_price/exc_deduct_price 를 넣는다. " +
-    "★반품과 달리 교환 비용은 **0 이상 양수만**(구매자에게 청구·결제요청하는 금액, 음수 불가).",
+    "★접수 시 사용자에게 두 가지를 반드시 물어 정하라: " +
+    "(1) **교환 옵션** — 동일 옵션으로 교환할지, 같은 상품페이지(products_id)의 다른 주문옵션으로 교환할지. " +
+    "다른 옵션이면 get_product(products_id, expand=product) 로 그 상품의 주문옵션(옵션명/가격/재고)을 보여주고 사용자가 고르게 한 뒤 " +
+    "items[].exc_product_id 에 그 옵션 id 를 지정한다. " +
+    "(2) **비용 청구 여부** — 재배송비(exc_del_price)·회수비(exc_ret_price)·**기타비용(exc_deduct_price)**을 구매자에게 청구할지 각각 확인. " +
+    "비용/상품을 정하기 전 먼저 get_claim_preview(ono)으로 상품·구매 시 배송비·결제정보를 안내하라. " +
+    "★반품과 달리 교환 비용은 **0 이상 양수만**(구매자 청구·결제요청 금액, 음수 불가).",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
-    items: claimItems.describe("교환할 상품 목록"),
+    items: exchangeItems.describe("교환할 상품 목록(항목별 exc_product_id 로 동일/다른 상품 교환 결정)"),
     exc_ct: z.string().describe("교환 사유 — get_claim_reasons 의 exchange 카테고리 중 선택"),
     exc_content: z.string().optional().describe("교환 상세 내용"),
-    exc_del_price: z.number().int().min(0).optional().describe("상품 배송비용 — 구매자 청구액(0 이상). 음수 불가"),
+    exc_del_price: z.number().int().min(0).optional().describe("상품 재배송비용 — 구매자 청구액(0 이상). 음수 불가"),
     exc_ret_price: z.number().int().min(0).optional().describe("상품 회수비용 — 구매자 청구액(0 이상)"),
     exc_deduct_price: z.number().int().min(0).optional().describe("기타비용 — 구매자 청구액(0 이상)"),
   },
@@ -663,7 +681,7 @@ server.tool(
     exc_content: z.string().optional().describe("교환 상세 내용"),
     exc_name: z.string().optional().describe("교환자명"),
     exc_request: z.string().optional().describe("요청사항"),
-    exc_del_price: z.number().int().min(0).optional().describe("상품 배송비용 — 구매자 청구액(0 이상). 음수 불가"),
+    exc_del_price: z.number().int().min(0).optional().describe("상품 재배송비용 — 구매자 청구액(0 이상). 음수 불가"),
     exc_ret_price: z.number().int().min(0).optional().describe("상품 회수비용 — 구매자 청구액(0 이상)"),
     exc_deduct_price: z.number().int().min(0).optional().describe("기타비용 — 구매자 청구액(0 이상)"),
     addressInfo: z.record(z.any()).optional().describe("회수지·회수 운송장 등(exc_ret_parcel/exc_ret_num/exc_ret_zipcode/exc_ret_addr1...)"),
@@ -701,8 +719,8 @@ server.tool(
     "groups[].shipping(배송 — paid_delivery_price=구매 시 결제 배송비/선착불/무료배송기준/배송원가), " +
     "refund_account(환불계좌 — needs_account=true면 무통장·가상계좌라 PG 자동취소 불가 → 환불계좌 안내·입력 필요, " +
     "주문에 등록된 bank_code/bank_num/bank_holder 가 있으면 함께 표시). " +
-    "반품·교환 접수 시작 시 이 내용을 먼저 사용자에게 안내한 뒤, 왕복 배송비(보내는+회수)를 결정하라 " +
-    "(보내는=*_del_price, 회수=*_ret_price; 반품은 음수=구매자 부담, 교환은 0이상 양수=구매자 청구). " +
+    "반품·교환 접수 시작 시 이 내용을 먼저 사용자에게 안내한 뒤, 왕복 배송비를 결정하라 " +
+    "(*_del_price=반품 배송비/교환 재배송비, *_ret_price=회수비; 반품은 음수=구매자 부담, 교환은 0이상 양수=구매자 청구). " +
     "그 뒤 create/update_refund·exchange 로 반영한다.",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),

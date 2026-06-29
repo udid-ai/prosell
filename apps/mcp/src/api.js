@@ -320,7 +320,7 @@ export const rejectExchange = (eno) => deleteById("order/exchange", eno, "교환
 
 /** 클레임(반품/교환) 접수 미리보기 — 주문(ono)의 '상품 기본정보 + 배송비 + 결제정보'를 한 번에 요약.
  *  반품·교환 접수 초기에 사용자에게 대상 상품·배송비·결제내역을 먼저 안내하고, 비용 결정 근거로 쓴다.
- *  왕복 배송비 청구는 보내는(출고) = *_del_price, 회수 = *_ret_price 로 나눠 입력한다. */
+ *  왕복 배송비 청구는 *_del_price(반품=배송비 / 교환=재배송비) + *_ret_price(회수비)로 나눠 입력한다. */
 /** 결제수단 코드 → 이름 (Order\OrderState::getPayMethod 와 동일) */
 const PAY_METHODS = {
   0: "없음", 100: "신용/체크 카드", 101: "카드 수기결제", 110: "휴대폰결제",
@@ -410,7 +410,7 @@ export async function getClaimPreview(ono) {
       "먼저 사용자에게 안내한 뒤 비용을 결정하라. " +
       "refund_account.needs_account=true(무통장·가상계좌)면 환불계좌(은행·계좌번호·예금주)를 반드시 안내·확인하고 " +
       "create/update_refund 의 ref_bank_code/ref_bank_num/ref_bank_holder 로 입력하라(주문에 등록된 계좌가 있으면 refund_account 에 표시됨). " +
-      "왕복 배송비는 보내는(출고)=*_del_price, 회수=*_ret_price 로 나눠 입력. " +
+      "왕복 배송비는 *_del_price(반품=배송비/교환=재배송비) + *_ret_price(회수비)로 나눠 입력. " +
       "반품은 음수=구매자 부담(환불액 차감), 교환은 0 이상 양수(구매자 청구).",
   };
 }

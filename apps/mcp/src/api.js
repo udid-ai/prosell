@@ -318,6 +318,37 @@ export const updateExchange = (eno, body) => putById("order/exchange", eno, body
 /** 교환 거부 — DELETE /order/exchange/{eno}. */
 export const rejectExchange = (eno) => deleteById("order/exchange", eno, "교환 거부 실패");
 
+/** 클레임(반품/교환) 배송비 안내 — 주문(ono)의 배송그룹별 '구매 시 배송비/선착불/무료배송기준/배송원가'를
+ *  요약한다. 반품·교환 왕복 배송비를 결정하기 전 구매자에게 안내하고 판단 근거로 쓴다.
+ *  왕복 청구는 보내는(출고) = *_del_price, 회수 = *_ret_price 로 나눠 입력한다. */
+export async function getClaimShipping(ono) {
+  const data = await getOrder(ono, "order,delivery,product");
+  const list = Array.isArray(data?.items) ? data.items : [];
+  const groups = new Map();
+  for (const it of list) {
+    const d = it?.delivery;
+    if (!d) continue;
+    const dno = d.dno ?? it?.product?.dno ?? null;
+    if (dno == null || groups.has(dno)) continue;
+    groups.set(dno, {
+      dno,
+      paid_delivery_price: d.del_price,   // 구매 시 결제한 배송비
+      delivery_payment: d.del_payment,    // 선/착불 구분(0=선불 등)
+      free_threshold: d.del_free_price,   // 무료배송 기준금액(0=해당없음)
+      delivery_cost: d.del_cost_price,    // 배송 원가
+      charge_price: d.del_charge_price,
+    });
+  }
+  return {
+    ono,
+    shipping_groups: [...groups.values()],
+    guide:
+      "paid_delivery_price = 구매 시 결제 배송비(이 금액을 구매자에게 안내). " +
+      "왕복 배송비 청구는 보내는(출고)=ref_del_price/exc_del_price, 회수=ref_ret_price/exc_ret_price 로 나눠 입력. " +
+      "반품은 음수=구매자 부담(환불액 차감), 교환은 0 이상 양수(구매자 청구).",
+  };
+}
+
 /** 클레임 사유 조회 — GET /shop/claim. 취소·반품·교환 각각의 사유 카테고리(선택지)를 반환.
  *  create_cancel/refund/exchange 의 사유(can_ct/ref_ct/exc_ct)를 여기서 골라 넣는다. */
 export async function getClaimReasons() {

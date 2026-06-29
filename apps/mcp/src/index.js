@@ -18,6 +18,7 @@ import {
   listCancels, createCancel, updateCancel, rejectCancel,
   listRefunds, createRefund, updateRefund, rejectRefund,
   listExchanges, createExchange, updateExchange, rejectExchange,
+  getClaimShipping,
   getClaimReasons, updateClaimReasons,
   listCouriers, createCourier, updateCourier, deleteCourier,
   createProduct, updateProduct, deleteProduct, getProductOption, uploadProductImages,
@@ -71,7 +72,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.10.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.11.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -670,6 +671,22 @@ server.tool(
   { eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno)") },
   async ({ eno }) => {
     try { return ok(await rejectExchange(eno)); } catch (e) { return fail(e.message); }
+  }
+);
+
+// ── 클레임 배송비 안내 ────────────────────────────────────────────────────
+server.tool(
+  "get_claim_shipping",
+  "반품/교환 시 배송비 결정을 위한 안내 도구(운영자). 주문(ono)의 배송그룹별 '구매 시 배송비'를 요약한다: " +
+    "paid_delivery_price(구매자가 결제한 배송비)·delivery_payment(선/착불)·free_threshold(무료배송 기준)·" +
+    "delivery_cost(배송 원가). 이 값을 구매자에게 안내하고, 판매자가 왕복 배송비(보내는+회수)를 결정하라. " +
+    "왕복은 보내는(출고)=ref_del_price/exc_del_price, 회수=ref_ret_price/exc_ret_price 로 나눠 입력한다 " +
+    "(반품은 음수=구매자 부담, 교환은 0이상 양수=구매자 청구). 그 뒤 create/update_refund·exchange 로 반영.",
+  {
+    ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
+  },
+  async ({ ono }) => {
+    try { return ok(await getClaimShipping(ono)); } catch (e) { return fail(e.message); }
   }
 );
 

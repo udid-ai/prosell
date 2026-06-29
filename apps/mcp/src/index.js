@@ -15,9 +15,9 @@ import {
   listOrders, getOrder, shipOrders, updateTracking,
   confirmBankPayment, setBankWaiting, setBankHold,
   setPreparing, setShippingDelay,
-  listCancels, createCancel,
-  listRefunds, createRefund, rejectRefund,
-  listExchanges, createExchange, rejectExchange,
+  listCancels, createCancel, updateCancel, rejectCancel,
+  listRefunds, createRefund, updateRefund, rejectRefund,
+  listExchanges, createExchange, updateExchange, rejectExchange,
   getClaimReasons, updateClaimReasons,
   listCouriers, createCourier, updateCourier, deleteCourier,
   createProduct, updateProduct, deleteProduct, getProductOption, uploadProductImages,
@@ -30,6 +30,20 @@ import {
   listIcons, createIcon, updateIcon, deleteIcon,
   listTemplates, createTemplate, updateTemplate, deleteTemplate,
   listInformation,
+  operatorMid,
+  listProductInquiries, createProductInquiry, updateProductInquiry, deleteProductInquiry,
+  listCustomerInquiries, createCustomerInquiry, updateCustomerInquiry, deleteCustomerInquiry,
+  getCustomerInquirySetup, uploadCustomerInquiryFiles,
+  listReviews, createReview, updateReview, deleteReview, getReviewSetup, uploadReviewFiles,
+  listNotices, createNotice, updateNotice, deleteNotice, getNoticeSetup, uploadNoticeFiles,
+  listFaqs, createFaq, updateFaq, deleteFaq, getFaqSetup, uploadFaqFiles,
+  listSkins,
+  listMembers, getMember, listDormantMembers, listDropoutMembers,
+  listLevels, createLevel, updateLevel, deleteLevel,
+  listCoupons, createCoupon, updateCoupon, deleteCoupon, listCouponDesigns,
+  listCouponIssues, issueCoupon, deleteCouponIssue,
+  listPoints, createPoint, updatePoint, deletePoint,
+  getShopCompany, updateShopCompany,
 } from "./api.js";
 import { runConnect } from "./connect.js";
 import { runLogin } from "./login.js";
@@ -55,7 +69,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.4.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.5.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -503,6 +517,29 @@ server.tool(
 );
 
 server.tool(
+  "update_refund",
+  "반품내역을 수정한다(운영자). 반품번호(rno)와 바꿀 필드만 보낸다. 사유(ref_ct)·상세(ref_content)·" +
+    "상태(ref_state)·반품자명(ref_name) 등. 회수지/회수 운송장 등은 addressInfo 객체로 보낸다 " +
+    "(예: ref_ret_parcel=회수 택배사 id, ref_ret_num=회수 운송장번호, ref_ret_zipcode/ref_ret_addr1 등). " +
+    "사유는 get_claim_reasons 의 refund 중 선택.",
+  {
+    rno: z.union([z.number().int(), z.string()]).describe("반품번호(rno) — list_refunds 의 refund.rno"),
+    ref_state: z.number().int().optional().describe("반품 상태 코드"),
+    ref_ct: z.string().optional().describe("반품 사유(get_claim_reasons 의 refund 중 선택)"),
+    ref_content: z.string().optional().describe("반품 상세 내용"),
+    ref_name: z.string().optional().describe("반품자명"),
+    ref_request: z.string().optional().describe("요청사항"),
+    addressInfo: z.record(z.any()).optional().describe("회수지·회수 운송장 등(ref_ret_parcel/ref_ret_num/ref_ret_zipcode/ref_ret_addr1...)"),
+  },
+  async ({ rno, addressInfo, ...refund }) => {
+    try {
+      const body = { refund, ...(addressInfo ? { addressInfo } : {}) };
+      return ok(await updateRefund(rno, body));
+    } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
   "reject_refund",
   "반품 거부 — 접수된 반품내역을 거부한다(운영자).",
   { rno: z.union([z.number().int(), z.string()]).describe("반품번호(rno)") },
@@ -539,6 +576,29 @@ server.tool(
   },
   async (body) => {
     try { return ok(await createExchange(body)); } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "update_exchange",
+  "교환내역을 수정한다(운영자). 교환번호(eno)와 바꿀 필드만 보낸다. 사유(exc_ct)·상세(exc_content)·" +
+    "상태(exc_state)·교환자명(exc_name) 등. 회수지/회수 운송장 등은 addressInfo 객체로 보낸다 " +
+    "(예: exc_ret_parcel=회수 택배사 id, exc_ret_num=회수 운송장번호, exc_ret_zipcode/exc_ret_addr1 등). " +
+    "사유는 get_claim_reasons 의 exchange 중 선택.",
+  {
+    eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno) — list_exchanges 의 exchange.eno"),
+    exc_state: z.number().int().optional().describe("교환 상태 코드"),
+    exc_ct: z.string().optional().describe("교환 사유(get_claim_reasons 의 exchange 중 선택)"),
+    exc_content: z.string().optional().describe("교환 상세 내용"),
+    exc_name: z.string().optional().describe("교환자명"),
+    exc_request: z.string().optional().describe("요청사항"),
+    addressInfo: z.record(z.any()).optional().describe("회수지·회수 운송장 등(exc_ret_parcel/exc_ret_num/exc_ret_zipcode/exc_ret_addr1...)"),
+  },
+  async ({ eno, addressInfo, ...exchange }) => {
+    try {
+      const body = { exchange, ...(addressInfo ? { addressInfo } : {}) };
+      return ok(await updateExchange(eno, body));
+    } catch (e) { return fail(e.message); }
   }
 );
 
@@ -597,6 +657,45 @@ server.tool(
   async (body) => {
     try {
       return ok(await createCancel(body));
+    } catch (e) {
+      return fail(e.message);
+    }
+  }
+);
+
+server.tool(
+  "update_cancel",
+  "취소내역을 수정한다(운영자). 취소번호(cno)와 바꿀 필드만 보낸다. 사유(can_ct)·상세(can_content)·" +
+    "환불계좌(can_bank_code/can_bank_num/can_bank_holder)·상태(can_state) 등을 변경한다. " +
+    "★can_state=2(취소완료)로 바꾸면 실제 취소·환불 완료 처리가 실행된다(되돌릴 수 없음). " +
+    "이미 취소완료(2)된 내역은 상태를 변경할 수 없다. 사유는 get_claim_reasons 의 cancel 중 선택.",
+  {
+    cno: z.union([z.number().int(), z.string()]).describe("취소번호(cno) — list_cancels 의 cancel.cno"),
+    can_state: z.number().int().min(0).max(2).optional().describe("0=취소접수 2=취소완료(설정 시 실제 환불 완료 실행)"),
+    can_ct: z.string().optional().describe("취소 사유(get_claim_reasons 의 cancel 중 선택)"),
+    can_content: z.string().optional().describe("취소 상세 내용"),
+    can_bank_code: z.string().optional().describe("(무통장 환불) 은행코드"),
+    can_bank_num: z.string().optional().describe("(무통장 환불) 계좌번호"),
+    can_bank_holder: z.string().optional().describe("(무통장 환불) 예금주"),
+    can_name: z.string().optional().describe("취소자명"),
+  },
+  async ({ cno, ...body }) => {
+    try {
+      return ok(await updateCancel(cno, body));
+    } catch (e) {
+      return fail(e.message);
+    }
+  }
+);
+
+server.tool(
+  "reject_cancel",
+  "취소 철회 — 접수된 취소내역을 되돌린다(운영자). 취소번호(cno) 지정. " +
+    "이미 취소완료(can_state=2)된 내역은 철회할 수 없다.",
+  { cno: z.union([z.number().int(), z.string()]).describe("철회할 취소번호(cno)") },
+  async ({ cno }) => {
+    try {
+      return ok(await rejectCancel(cno));
     } catch (e) {
       return fail(e.message);
     }
@@ -1020,6 +1119,731 @@ server.tool(
     "content.information.id 로 연결한다.",
   listParams,
   async (params) => { try { return ok(await listInformation(params)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 상품문의 (운영자) ────────────────────────────────────────────────────────
+// 운영자(admin) 토큰은 전체 문의를 조회하고, update 로 답변(reply_content)을 등록한다.
+server.tool(
+  "list_product_inquiries",
+  "상품문의 목록을 조회한다(운영자). 답변 대기/완료를 함께 본다. 각 항목: id(문의번호)·product_id(상품)·" +
+    "title·content·secret(비밀글)·reply_content(답변)·reply_dt(답변일). 답변이 비어 있으면 미답변.",
+  {
+    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
+    id: z.string().optional().describe("문의번호(id) 단건/콤마 복수"),
+    title: z.string().optional().describe("제목 부분검색"),
+    mid: z.number().int().optional().describe("작성 회원번호로 필터"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listProductInquiries(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "answer_product_inquiry",
+  "상품문의에 답변을 등록/수정한다(운영자). 문의번호(id)와 답변 내용(reply_content)을 보내면 " +
+    "로그인한 운영자를 답변자로 자동 등록한다. 문의 원문(title/content/secret) 수정도 가능(보통 불필요).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("상품문의 번호(list_product_inquiries 의 id)"),
+    reply_content: z.string().optional().describe("답변 내용(작성 시 운영자를 답변자로 자동 등록)"),
+    reply_mid: z.number().int().optional().describe("답변자 회원번호 — 생략 시 로그인 운영자 본인(관리자 등급이어야 함)"),
+    title: z.string().optional().describe("문의 제목 수정"),
+    content: z.string().optional().describe("문의 본문 수정"),
+    secret: z.number().int().min(0).max(1).optional().describe("비밀글 여부 0/1"),
+  },
+  async ({ id, reply_content, reply_mid, ...rest }) => {
+    try {
+      const body = {};
+      if (reply_content !== undefined) {
+        body.reply_mid = reply_mid ?? (await operatorMid());
+        body.reply_content = reply_content;
+      } else if (reply_mid !== undefined) {
+        body.reply_mid = reply_mid;
+      }
+      for (const [k, v] of Object.entries(rest)) if (v !== undefined) body[k] = v;
+      return ok(await updateProductInquiry(id, body));
+    } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "create_product_inquiry",
+  "상품문의를 등록한다(운영자 작성). 회원으로 등록되며 product_id·title·content 필수. " +
+    "(고객 셀프 문의는 스토어프론트에서 처리; 이 도구는 운영자 대리등록용)",
+  {
+    product_id: z.union([z.number().int(), z.string()]).describe("상품 id"),
+    title: z.string().describe("제목"),
+    content: z.string().describe("내용"),
+    secret: z.number().int().min(0).max(1).optional().describe("비밀글 0/1"),
+  },
+  async (body) => { try { return ok(await createProductInquiry(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_product_inquiry",
+  "상품문의를 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 상품문의 번호") },
+  async ({ id }) => { try { return ok(await deleteProductInquiry(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 고객문의 (운영자) ────────────────────────────────────────────────────────
+server.tool(
+  "list_customer_inquiries",
+  "고객문의(1:1 문의) 목록을 조회한다(운영자). 각 항목: id·category(분류)·title·content·" +
+    "reply_content(답변)·files(첨부). 답변이 비어 있으면 미답변.",
+  {
+    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
+    id: z.string().optional().describe("문의번호(id) 단건/콤마 복수"),
+    title: z.string().optional().describe("제목 부분검색"),
+    mid: z.number().int().optional().describe("작성 회원번호로 필터"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listCustomerInquiries(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "answer_customer_inquiry",
+  "고객문의에 답변을 등록/수정한다(운영자). 문의번호(id)와 답변 내용(reply_content)을 보내면 " +
+    "로그인한 운영자를 답변자로 자동 등록한다. 문의 원문(category/title/content/editor/files) 수정도 가능.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("고객문의 번호(list_customer_inquiries 의 id)"),
+    reply_content: z.string().optional().describe("답변 내용(작성 시 운영자를 답변자로 자동 등록)"),
+    reply_mid: z.number().int().optional().describe("답변자 회원번호 — 생략 시 로그인 운영자 본인"),
+    category: z.string().optional().describe("문의 분류 수정"),
+    title: z.string().optional(),
+    content: z.string().optional(),
+    editor: z.number().int().min(0).max(1).optional().describe("0=텍스트 1=HTML"),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(upload_customer_inquiry_files 결과)"),
+  },
+  async ({ id, reply_content, reply_mid, ...rest }) => {
+    try {
+      const body = {};
+      if (reply_content !== undefined) {
+        body.reply_mid = reply_mid ?? (await operatorMid());
+        body.reply_content = reply_content;
+      } else if (reply_mid !== undefined) {
+        body.reply_mid = reply_mid;
+      }
+      for (const [k, v] of Object.entries(rest)) if (v !== undefined) body[k] = v;
+      return ok(await updateCustomerInquiry(id, body));
+    } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "create_customer_inquiry",
+  "고객문의를 등록한다(운영자 작성, 회원 전용). item_type(0=일반,1=주문상품,2=장바구니,3=보관,4=최근)·" +
+    "category·title·content 필수. 첨부는 먼저 upload_customer_inquiry_files 로 올려 files 에 id 를 넣는다. " +
+    "분류(category) 선택지는 customer_inquiry_setup 에서 확인.",
+  {
+    item_type: z.number().int().min(0).max(4).describe("0=일반 1=주문상품 2=장바구니 3=보관 4=최근"),
+    category: z.string().describe("문의 분류"),
+    title: z.string().describe("제목"),
+    content: z.string().describe("내용"),
+    item_ids: z.string().optional().describe("연관 항목 id 콤마구분(item_type 1~4)"),
+    editor: z.number().int().min(0).max(1).optional().describe("0=텍스트 1=HTML"),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록"),
+  },
+  async (body) => { try { return ok(await createCustomerInquiry(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_customer_inquiry",
+  "고객문의를 삭제한다(운영자). 첨부파일도 함께 비활성화된다.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 고객문의 번호") },
+  async ({ id }) => { try { return ok(await deleteCustomerInquiry(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "customer_inquiry_setup",
+  "고객문의 설정을 조회한다(운영자). 분류(categories) 목록과 첨부 제한(uploadCount/uploadSize)을 반환. " +
+    "create_customer_inquiry 의 category 는 여기 categories 중에서 고른다.",
+  {},
+  async () => { try { return ok(await getCustomerInquirySetup()); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "upload_customer_inquiry_files",
+  "고객문의 첨부파일을 업로드한다(운영자). 로컬 파일(최대 3). 응답 items[].id 를 " +
+    "create_customer_inquiry/answer_customer_inquiry 의 files 에 넣는다.",
+  { files: z.array(z.string()).min(1).max(3).describe("업로드할 로컬 파일 경로 목록(최대 3)") },
+  async ({ files }) => { try { return ok(await uploadCustomerInquiryFiles(files)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 상품평(리뷰) (운영자) ─────────────────────────────────────────────────────
+server.tool(
+  "list_reviews",
+  "상품평(리뷰) 목록을 조회한다(운영자). 각 항목: id·product_id(상품)·score(별점 1~5)·content·" +
+    "best(베스트)·files(사진)·reply_content(운영자 답변)·reply_dt. 답변이 비어 있으면 미답변. " +
+    "별점·사진여부·상품으로 필터 가능.",
+  {
+    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
+    id: z.string().optional().describe("리뷰번호(id) 단건/콤마 복수"),
+    product_id: z.number().int().optional().describe("상품 id 로 필터"),
+    prno: z.number().int().optional().describe("상품주문번호(prno)로 필터"),
+    mid: z.number().int().optional().describe("작성 회원번호로 필터"),
+    score: z.number().int().min(1).max(5).optional().describe("별점(1~5)으로 필터"),
+    photo: z.number().int().min(0).max(1).optional().describe("1=사진 리뷰만, 0=사진 없는 것"),
+    best: z.number().int().min(0).max(1).optional().describe("1=베스트 리뷰만"),
+    content: z.string().optional().describe("내용 부분검색"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listReviews(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "answer_review",
+  "상품평에 답변(댓글)을 등록/수정한다(운영자). 리뷰번호(id)와 답변 내용(reply_content)을 보내면 " +
+    "로그인한 운영자를 답변자로 자동 등록한다. 리뷰 원문(content/score/files)·베스트 지정(best) 수정도 가능.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("상품평 번호(list_reviews 의 id)"),
+    reply_content: z.string().optional().describe("답변(댓글) 내용(작성 시 운영자를 답변자로 자동 등록)"),
+    reply_mid: z.number().int().optional().describe("답변자 회원번호 — 생략 시 로그인 운영자 본인"),
+    content: z.string().optional().describe("리뷰 본문 수정"),
+    score: z.number().int().min(1).max(5).optional().describe("별점 수정(1~5)"),
+    best: z.number().int().min(0).max(1).optional().describe("베스트 리뷰 지정 1/0"),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(upload_review_files 결과)"),
+  },
+  async ({ id, reply_content, reply_mid, ...rest }) => {
+    try {
+      const body = {};
+      if (reply_content !== undefined) {
+        body.reply_mid = reply_mid ?? (await operatorMid());
+        body.reply_content = reply_content;
+      } else if (reply_mid !== undefined) {
+        body.reply_mid = reply_mid;
+      }
+      for (const [k, v] of Object.entries(rest)) if (v !== undefined) body[k] = v;
+      return ok(await updateReview(id, body));
+    } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "create_review",
+  "상품평을 등록한다(운영자 작성, 회원). 상품주문번호(prno)·content·score(1~5) 필수. " +
+    "첨부는 먼저 upload_review_files 로 올려 files 에 id 를 넣는다. " +
+    "(고객 셀프 리뷰는 스토어프론트에서 처리; 이 도구는 운영자 대리등록용)",
+  {
+    prno: z.union([z.number().int(), z.string()]).describe("상품주문번호(prno) — 구매한 상품주문"),
+    content: z.string().describe("리뷰 내용"),
+    score: z.number().int().min(1).max(5).describe("별점(1~5)"),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(최대 5)"),
+  },
+  async (body) => { try { return ok(await createReview(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_review",
+  "상품평을 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 상품평 번호") },
+  async ({ id }) => { try { return ok(await deleteReview(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "review_setup",
+  "상품평 설정을 조회한다(운영자). 적립 포인트(point_basic/point_photo)·작성가능 기간(review_day)·" +
+    "별점 감정표현(emotion) 등을 반환.",
+  {},
+  async () => { try { return ok(await getReviewSetup()); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "upload_review_files",
+  "상품평 첨부파일(사진)을 업로드한다(운영자). 로컬 파일(최대 5). 응답 items[].id 를 " +
+    "create_review/answer_review 의 files 에 넣는다.",
+  { files: z.array(z.string()).min(1).max(5).describe("업로드할 로컬 파일 경로 목록(최대 5)") },
+  async ({ files }) => { try { return ok(await uploadReviewFiles(files)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 공지사항 (운영자) ────────────────────────────────────────────────────────
+server.tool(
+  "list_notices",
+  "공지사항 목록을 조회한다. 각 항목: id·category(분류)·title·content·dt·views(조회수)·files. " +
+    "응답 fixeds 는 상단고정된 공지 id 목록.",
+  {
+    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
+    id: z.string().optional().describe("공지 id 단건/콤마 복수"),
+    title: z.string().optional().describe("제목 부분검색"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listNotices(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_notice",
+  "공지사항을 등록한다(운영자). category·title·content 필수. 작성자는 로그인 운영자로 자동 등록. " +
+    "fixed=1 이면 상단고정. 첨부는 먼저 upload_notice_files 로 올려 files 에 id 를 넣는다. " +
+    "분류(category)는 notice_setup 에서 확인.",
+  {
+    category: z.string().describe("분류(notice_setup 의 categories 중 선택)"),
+    title: z.string().describe("제목"),
+    content: z.string().describe("내용(HTML 가능)"),
+    fixed: z.number().int().min(0).max(1).optional().describe("1=상단고정"),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(최대 3)"),
+  },
+  async ({ ...body }) => {
+    try {
+      body.mid = await operatorMid();
+      return ok(await createNotice(body));
+    } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "update_notice",
+  "공지사항을 수정한다(운영자). id 와 바꿀 필드만(category/title/content/fixed/files).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("공지 id"),
+    category: z.string().optional(),
+    title: z.string().optional(),
+    content: z.string().optional(),
+    fixed: z.number().int().min(0).max(1).optional().describe("1=상단고정"),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록"),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateNotice(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_notice",
+  "공지사항을 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 공지 id") },
+  async ({ id }) => { try { return ok(await deleteNotice(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "notice_setup",
+  "공지사항 설정을 조회한다(운영자). 분류(categories)·첨부 제한(uploadCount/uploadSize) 반환.",
+  {},
+  async () => { try { return ok(await getNoticeSetup()); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "upload_notice_files",
+  "공지사항 첨부파일을 업로드한다(운영자). 로컬 파일(최대 3). items[].id 를 create_notice/update_notice 의 files 로.",
+  { files: z.array(z.string()).min(1).max(3).describe("업로드할 로컬 파일 경로 목록(최대 3)") },
+  async ({ files }) => { try { return ok(await uploadNoticeFiles(files)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 자주묻는 질문(FAQ) (운영자) ───────────────────────────────────────────────
+server.tool(
+  "list_faqs",
+  "FAQ(자주묻는 질문) 목록을 조회한다. 각 항목: id·category(분류)·title·content·views·files.",
+  {
+    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
+    id: z.string().optional().describe("FAQ id 단건/콤마 복수"),
+    title: z.string().optional().describe("제목 부분검색"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listFaqs(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_faq",
+  "FAQ를 등록한다(운영자). category·title·content 필수. 작성자는 로그인 운영자로 자동 등록. " +
+    "첨부는 먼저 upload_faq_files 로 올려 files 에 id 를 넣는다. 분류(category)는 faq_setup 에서 확인.",
+  {
+    category: z.string().describe("분류(faq_setup 의 categories 중 선택)"),
+    title: z.string().describe("질문 제목"),
+    content: z.string().describe("답변 내용(HTML 가능)"),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(최대 3)"),
+  },
+  async ({ ...body }) => {
+    try {
+      body.mid = await operatorMid();
+      return ok(await createFaq(body));
+    } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "update_faq",
+  "FAQ를 수정한다(운영자). id 와 바꿀 필드만(category/title/content/files).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("FAQ id"),
+    category: z.string().optional(),
+    title: z.string().optional(),
+    content: z.string().optional(),
+    files: z.array(z.number().int()).optional().describe("첨부 file id 목록"),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateFaq(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_faq",
+  "FAQ를 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 FAQ id") },
+  async ({ id }) => { try { return ok(await deleteFaq(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "faq_setup",
+  "FAQ 설정을 조회한다(운영자). 분류(categories)·첨부 제한(uploadCount/uploadSize) 반환.",
+  {},
+  async () => { try { return ok(await getFaqSetup()); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "upload_faq_files",
+  "FAQ 첨부파일을 업로드한다(운영자). 로컬 파일(최대 3). items[].id 를 create_faq/update_faq 의 files 로.",
+  { files: z.array(z.string()).min(1).max(3).describe("업로드할 로컬 파일 경로 목록(최대 3)") },
+  async ({ files }) => { try { return ok(await uploadFaqFiles(files)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 스킨 조회 (운영자) ────────────────────────────────────────────────────────
+server.tool(
+  "list_skins",
+  "스킨(디자인 템플릿) 이름 목록을 조회한다(운영자). device(pc/m)와 skin(스킨 종류)을 지정한다.",
+  {
+    device: z.enum(["pc", "m"]).describe("pc 또는 m"),
+    skin: z.string().describe("스킨 종류(그룹) 식별자"),
+  },
+  async ({ device, skin }) => { try { return ok(await listSkins(device, skin)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 회원계정 (운영자 조회 전용) ────────────────────────────────────────────────
+const memberListParams = {
+  period_start: z.string().optional().describe("가입일 검색 시작 YYYY-MM-DD (기본 오늘)"),
+  period_end: z.string().optional().describe("가입일 검색 종료 YYYY-MM-DD (기본 오늘)"),
+  mid: z.string().optional().describe("회원번호(mid) 단건/콤마 복수"),
+  uid: z.string().optional().describe("아이디 검색"),
+  hp: z.string().optional().describe("휴대폰번호 검색"),
+  level: z.number().int().optional().describe("회원등급으로 필터"),
+  page: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
+  expand: z.string().optional().describe("origin(기본)/info/files 조합. 활동정보·파일까지 보려면 origin,info,files"),
+};
+
+server.tool(
+  "list_members",
+  "회원 목록을 조회한다(운영자). 가입일·아이디·휴대폰·등급으로 필터. 기본 expand=origin(기본정보). " +
+    "활동정보(주문수·포인트 등)·파일까지 보려면 expand=origin,info,files. " +
+    "⚠️ 응답에는 이름·연락처·이메일·주소·계좌 등 개인정보(PII)가 포함되니 취급에 주의하라.",
+  memberListParams,
+  async (params) => { try { return ok(await listMembers(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "get_member",
+  "회원 상세를 조회한다(운영자). 회원번호(mid)로 origin(기본정보)·info(활동정보)·files(파일)를 반환. " +
+    "⚠️ 개인정보(PII: 이름/연락처/이메일/주소/계좌)가 복호화되어 포함되니 취급에 주의하라.",
+  {
+    mid: z.union([z.number().int(), z.string()]).describe("회원번호(mid)"),
+    expand: z.string().optional().describe("기본: origin,info,files"),
+  },
+  async ({ mid, expand }) => { try { return ok(await getMember(mid, expand || "origin,info,files")); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "list_dormant_members",
+  "휴면회원 목록을 조회한다(운영자). 필터는 list_members 와 동일. (state=2 휴면 계정)",
+  memberListParams,
+  async (params) => { try { return ok(await listDormantMembers(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "list_dropout_members",
+  "탈퇴회원 목록을 조회한다(운영자). 필터는 list_members 와 동일. (state=3 탈퇴 계정)",
+  memberListParams,
+  async (params) => { try { return ok(await listDropoutMembers(params)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 회원등급 (운영자 CRUD) ─────────────────────────────────────────────────────
+const levelDiscount = z.object({
+  type: z.number().int().min(1).max(2).optional().describe("1=% 2=정액"),
+  price: z.number().int().min(0).optional().describe("할인값(type=1이면 0~99)"),
+  max: z.number().int().min(0).optional().describe("최대 할인액"),
+}).optional();
+const levelCoupon = z.array(z.object({
+  id: z.number().int().describe("쿠폰 id"),
+  quantity: z.number().int().min(0).optional().describe("지급 수량"),
+})).max(4).optional().describe("등급 지급 쿠폰(최대 4)");
+
+server.tool(
+  "list_levels",
+  "회원등급 목록을 조회한다(운영자). 각 항목: level(등급번호)·title·discount(등급할인)·point(적립)·" +
+    "levelup(자동등업 조건)·coupon(지급쿠폰)·icon.",
+  {
+    level: z.string().optional().describe("등급번호 단건/콤마 복수로 필터"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listLevels(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_level",
+  "회원등급을 등록한다(운영자). level(등급번호, 중복불가)·title(최대 8자) 필수. " +
+    "discount(등급할인)·point(적립)·levelup(자동등업)·coupon(지급쿠폰)은 선택. icon 은 아이콘 id(ct=3).",
+  {
+    level: z.number().int().describe("등급번호(중복 불가)"),
+    title: z.string().describe("등급명(최대 8자)"),
+    onoff: z.number().int().min(0).max(1).optional().describe("1=사용"),
+    icon: z.number().int().optional().describe("아이콘 id (list_icons, ct=3)"),
+    levelup: z.object({
+      use: z.number().int().min(0).max(3).optional().describe("자동등업 조건 사용(0~3)"),
+      order: z.number().int().min(0).optional().describe("주문 횟수 조건"),
+      price: z.number().int().min(0).optional().describe("주문 금액 조건"),
+    }).optional(),
+    discount: levelDiscount.describe("등급 할인 {type,price,max}"),
+    point: levelDiscount.describe("등급 적립 {type,price,max}"),
+    coupon: levelCoupon,
+  },
+  async (body) => { try { return ok(await createLevel(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_level",
+  "회원등급을 수정한다(운영자). id(등급번호)와 바꿀 필드만(create_level 과 같은 구조).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("수정할 등급번호"),
+    title: z.string().optional().describe("등급명(최대 8자)"),
+    onoff: z.number().int().min(0).max(1).optional(),
+    icon: z.number().int().optional(),
+    levelup: z.object({
+      use: z.number().int().min(0).max(3).optional(),
+      order: z.number().int().min(0).optional(),
+      price: z.number().int().min(0).optional(),
+    }).optional(),
+    discount: levelDiscount,
+    point: levelDiscount,
+    coupon: levelCoupon,
+  },
+  async ({ id, ...body }) => { try { return ok(await updateLevel(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_level",
+  "회원등급을 삭제한다(운영자). 기본등급(<2)·관리자등급(>100)은 삭제 불가.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 등급번호") },
+  async ({ id }) => { try { return ok(await deleteLevel(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 쿠폰 설정 (운영자) ────────────────────────────────────────────────────────
+server.tool(
+  "list_coupons",
+  "쿠폰(설정/템플릿) 목록을 조회한다(운영자). 각 항목: id·title·coupon_type·discount_type·할인값·" +
+    "사용조건·발급/사용 수량 등. 발급 시 이 쿠폰 id 를 쓴다.",
+  {
+    period_start: z.string().optional().describe("등록일 검색 시작 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("등록일 검색 종료 YYYY-MM-DD (기본 오늘)"),
+    id: z.string().optional().describe("쿠폰 id 단건/콤마 복수"),
+    title: z.string().optional().describe("제목 부분검색"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listCoupons(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "list_coupon_designs",
+  "쿠폰 디자인 목록을 조회한다(운영자). create_coupon 의 design_id 는 여기 id 에서 고른다.",
+  {
+    id: z.string().optional().describe("디자인 id 단건/콤마 복수"),
+    title: z.string().optional(),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listCouponDesigns(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_coupon",
+  "쿠폰을 등록한다(운영자). 필수: coupon_type(1=일반,2=상품할인,3=배송할인)·discount_type(0=배송비,1=정액,2=%)·" +
+    "discount_price(정액/배송 할인액; %면 0)·discount_percent(%값 0~99; 정액이면 0)·use_type(1=발급후N일,2=지정만료일)·" +
+    "design_id(list_coupon_designs). use_type=1 이면 use_day, use_type=2 이면 use_dt(YYYY-MM-DDThh:mm:ss+09:00) 필요. " +
+    "discount_terms_price(최소주문액)·discount_max_price(최대할인)·level(대상등급)·pincode 등은 선택.",
+  {
+    coupon_type: z.number().int().min(1).max(3).describe("1=일반 2=상품할인 3=배송할인"),
+    discount_type: z.number().int().min(0).max(2).describe("0=배송비 1=정액 2=퍼센트"),
+    discount_price: z.number().int().min(0).describe("정액/배송 할인액(%면 0)"),
+    discount_percent: z.number().int().min(0).max(99).describe("% 할인값(정액이면 0)"),
+    use_type: z.number().int().min(1).max(2).describe("1=발급후 N일 2=지정 만료일"),
+    design_id: z.number().int().describe("쿠폰 디자인 id (list_coupon_designs)"),
+    use_day: z.number().int().min(0).max(999).optional().describe("use_type=1: 사용가능 일수"),
+    use_dt: z.string().optional().describe("use_type=2: 만료일시 YYYY-MM-DDThh:mm:ss+09:00"),
+    discount_terms_price: z.number().int().min(0).optional().describe("최소 주문금액"),
+    discount_max_price: z.number().int().min(0).optional().describe("최대 할인액(%쿠폰)"),
+    name: z.string().optional().describe("쿠폰명(내부)"),
+    title: z.string().optional().describe("쿠폰 제목"),
+    category: z.string().optional().describe("대상 카테고리 code"),
+    level: z.number().int().optional().describe("대상 회원등급"),
+    pincode: z.string().optional().describe("핀코드"),
+    overlap: z.number().int().optional().describe("중복사용 0/1/7/30/999"),
+    onoff: z.number().int().min(0).max(1).optional().describe("1=사용"),
+    down_max: z.number().int().optional().describe("최대 다운로드 수"),
+  },
+  async (body) => { try { return ok(await createCoupon(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_coupon",
+  "쿠폰을 수정한다(운영자). id 와 바꿀 필드만(create_coupon 과 같은 필드).",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("쿠폰 id"),
+    coupon_type: z.number().int().min(1).max(3).optional(),
+    discount_type: z.number().int().min(0).max(2).optional(),
+    discount_price: z.number().int().min(0).optional(),
+    discount_percent: z.number().int().min(0).max(99).optional(),
+    use_type: z.number().int().min(1).max(2).optional(),
+    use_day: z.number().int().min(0).max(999).optional(),
+    use_dt: z.string().optional(),
+    discount_terms_price: z.number().int().min(0).optional(),
+    discount_max_price: z.number().int().min(0).optional(),
+    design_id: z.number().int().optional(),
+    name: z.string().optional(),
+    title: z.string().optional(),
+    category: z.string().optional(),
+    level: z.number().int().optional(),
+    pincode: z.string().optional(),
+    overlap: z.number().int().optional(),
+    onoff: z.number().int().min(0).max(1).optional(),
+    down_max: z.number().int().optional(),
+  },
+  async ({ id, ...body }) => { try { return ok(await updateCoupon(id, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_coupon",
+  "쿠폰을 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 쿠폰 id") },
+  async ({ id }) => { try { return ok(await deleteCoupon(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 쿠폰 발급 (운영자) ────────────────────────────────────────────────────────
+server.tool(
+  "list_coupon_issues",
+  "발급된 쿠폰 내역을 조회한다(운영자). 쿠폰·회원·기간으로 필터. 각 항목: id(발급 id)·coupon_id·mid·" +
+    "사용상태(state)·use_dt 등.",
+  {
+    period_start: z.string().optional().describe("발급일 검색 시작 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("발급일 검색 종료 YYYY-MM-DD (기본 오늘)"),
+    id: z.string().optional().describe("발급 id 단건/콤마 복수"),
+    coupon_id: z.number().int().optional().describe("쿠폰 id 로 필터"),
+    mid: z.number().int().optional().describe("회원번호로 필터"),
+    uid: z.string().optional().describe("아이디로 필터"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listCouponIssues(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "issue_coupon",
+  "쿠폰을 회원에게 발급한다(운영자). 1회 호출당 회원 1명. coupon_id(list_coupons)·mid(대상 회원)·" +
+    "coupon_name(발급 쿠폰명, 최대 20자)·ct(발급 구분) 필수. 여러 명에게 주려면 회원마다 반복 호출한다.",
+  {
+    coupon_id: z.number().int().describe("발급할 쿠폰 id (list_coupons)"),
+    mid: z.number().int().describe("대상 회원번호(mid)"),
+    coupon_name: z.string().max(20).describe("발급 쿠폰명(최대 20자)"),
+    ct: z.number().int().describe("발급 구분 코드(쇼핑몰 정의)"),
+  },
+  async (body) => { try { return ok(await issueCoupon(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_coupon_issue",
+  "발급된 쿠폰을 삭제(회수)한다(운영자). list_coupon_issues 의 발급 id.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 발급 id") },
+  async ({ id }) => { try { return ok(await deleteCouponIssue(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 포인트 (운영자) ───────────────────────────────────────────────────────────
+server.tool(
+  "list_points",
+  "포인트 내역을 조회한다(운영자). 회원·기간으로 필터. 각 항목: id·mid·point(부호 있음)·" +
+    "total_point(누적)·content(사유)·dt.",
+  {
+    period_start: z.string().optional().describe("검색 시작 YYYY-MM-DD (기본 오늘)"),
+    period_end: z.string().optional().describe("검색 종료 YYYY-MM-DD (기본 오늘)"),
+    mid: z.number().int().optional().describe("회원번호로 필터"),
+    uid: z.string().optional().describe("아이디로 필터"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  },
+  async (params) => { try { return ok(await listPoints(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_point",
+  "회원 포인트를 지급/차감한다(운영자). mid(대상 회원)·point(금액, **부호로 방향**: 양수=지급, 음수=차감)·" +
+    "content(사유) 필수. ct 는 포인트 구분 코드(0~5). 처리자(cre_mid)는 로그인 운영자로 자동 등록.",
+  {
+    mid: z.number().int().describe("대상 회원번호(mid)"),
+    point: z.number().int().describe("포인트 금액 — 양수=지급, 음수=차감 (예: 1000 지급, -500 차감)"),
+    content: z.string().max(255).describe("지급/차감 사유"),
+    ct: z.number().int().min(0).max(5).optional().describe("포인트 구분 코드(0~5, 기본 0)"),
+  },
+  async ({ mid, point, content, ct }) => {
+    try {
+      const body = { mid, point, content, ct: ct ?? 0, cre_mid: await operatorMid() };
+      return ok(await createPoint(body));
+    } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "update_point",
+  "포인트 내역을 수정한다(운영자). 금액은 변경 불가하고 사유(content)만 수정된다.",
+  {
+    id: z.union([z.number().int(), z.string()]).describe("포인트 내역 id (list_points 의 id 값 그대로)"),
+    content: z.string().max(255).describe("수정할 사유"),
+  },
+  async ({ id, content }) => { try { return ok(await updatePoint(id, { content })); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_point",
+  "포인트 내역을 삭제한다(운영자). 회원 누적 포인트도 함께 조정된다.",
+  { id: z.union([z.number().int(), z.string()]).describe("삭제할 포인트 내역 id") },
+  async ({ id }) => { try { return ok(await deletePoint(id)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 쇼핑몰 기본정보 (운영자) ──────────────────────────────────────────────────
+server.tool(
+  "get_shop_company",
+  "쇼핑몰 기본정보(회사정보)를 조회한다(운영자). 상호·고객센터·운영시간·사업자정보·주소·" +
+    "개인정보보호책임자·AS 연락처 등. 푸터·약관에 노출되는 공식 정보.",
+  {},
+  async () => { try { return ok(await getShopCompany()); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_shop_company",
+  "쇼핑몰 기본정보(회사정보)를 수정한다(운영자). 보낸 필드만 갱신된다. 변경 시 푸터 캐시가 자동 갱신됨. " +
+    "전화/팩스/사업자번호는 숫자만(하이픈 자동 제거).",
+  {
+    title: z.string().optional().describe("상호(쇼핑몰명)"),
+    service: z.string().optional().describe("고객센터 안내(전화/시간 등 표기 문구)"),
+    email: z.string().optional().describe("대표 이메일"),
+    tel: z.string().optional().describe("대표 전화(숫자)"),
+    fax: z.string().optional().describe("팩스(숫자)"),
+    worktime: z.string().optional().describe("운영시간 안내"),
+    ceo: z.string().optional().describe("대표자명"),
+    company: z.string().optional().describe("법인/회사명"),
+    biznum: z.string().optional().describe("사업자등록번호(숫자, 최대 10)"),
+    salenum: z.string().optional().describe("통신판매업 신고번호"),
+    business: z.string().optional().describe("업태"),
+    bizct: z.string().optional().describe("업종"),
+    seller: z.number().int().min(0).max(3).optional().describe("통신판매업자 구분(0~3)"),
+    zipcode: z.string().optional().describe("우편번호"),
+    addr1: z.string().optional().describe("주소"),
+    addr2: z.string().optional().describe("상세주소"),
+    admcode: z.string().optional().describe("법정동코드"),
+    pri_name: z.string().optional().describe("개인정보보호책임자명"),
+    pri_email: z.string().optional().describe("개인정보보호책임자 이메일"),
+    as_tel: z.string().optional().describe("AS 연락처"),
+    as_url: z.string().optional().describe("AS 안내 URL"),
+  },
+  async (data) => { try { return ok(await updateShopCompany(data)); } catch (e) { return fail(e.message); } }
 );
 
 // 시작 시 PROSELL_SHOP 이 주어지면 저장(다음 실행부터 생략 가능)

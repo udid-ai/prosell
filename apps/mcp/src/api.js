@@ -671,6 +671,48 @@ export const getBoardSetup = () => getJson("board/setup", {}, "게시판 설정 
 /** 게시판 첨부 업로드 — POST /board/upload(최대 5). items[].id 를 photo(콤마구분)로 연결. */
 export const uploadBoardFiles = (files) => uploadFiles("board/upload", {}, files, "게시판 파일 업로드 실패");
 
+// ── 개인결제(private_pay) (운영자) — 모두 isToken()=admin ──────────────────────
+// 관리자가 발급/관리하는 개인 결제창. 주문/반품/교환과 연계해 추가비용을 청구한다.
+//  ct(결제유형): 1=주문관련 2=해외배송비 10/11=반품비용(선/후납) 20/21=교환비용(선/후납) 99=기타
+//  pay_state: 0=발급완료 1=입금대기 10=결제완료 90=취소접수 99=취소완료
+//  pay_method: 130=가상계좌 300=무통장 (환불 시 계좌이체 필요)
+async function deleteQuery(path, params, fallback) {
+  const u = new URL(`${apiBase()}/${path}`);
+  for (const [k, v] of Object.entries(params || {})) if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
+  const res = await fetch(u, { method: "DELETE", headers: await bearerHeaders() });
+  return jsonOrThrow(res, fallback);
+}
+
+/** 개인결제 목록 — GET /order/privatepay. 기간/상태(pay_state)/유형(ct)/수신자/번호(code+codes) 검색. */
+export const listPrivatePays = (params = {}) => getJson("order/privatepay", params, "개인결제 목록 조회 실패");
+/** 개인결제 상세 — GET /order/privatepay/{ppno}. 결제/은행/환불계좌/취소/현금영수증 포함. */
+export const getPrivatePay = (ppno) => getJson(`order/privatepay/${encodeURIComponent(ppno)}`, {}, "개인결제 조회 실패");
+/** 개인결제 발급 — POST /order/privatepay. body:{ct, price, uid?/name?/hp?/email?, dno?/rno?/eno?, content?, pg_id?}.
+ *  발급 즉시 안내 메시지 발송 + 발급된 결제창 정보(data, url) 반환. */
+export const createPrivatePay = (body) => postJson("order/privatepay", body, "개인결제 발급 실패");
+/** 개인결제 수정 — PUT /order/privatepay/{ppno}. pay_state=0 이면 ct/price/dno/content/pg_id, 결제 후엔 무통장/환불계좌. */
+export const updatePrivatePay = (ppno, body) => putById("order/privatepay", ppno, body, "개인결제 수정 실패");
+/** 개인결제 삭제 — DELETE /order/privatepay/{ppno}. 발급완료(0)/취소완료(99) 상태만 삭제 가능. */
+export const deletePrivatePay = (ppno) => deleteById("order/privatepay", ppno, "개인결제 삭제 실패");
+/** 무통장 입금확인 — POST /order/privatepay/banking. body:{ppno, pay_bank_code?, pay_bank_name?} → 결제완료(10). */
+export const confirmPrivatePayBanking = (body) => postJson("order/privatepay/banking", body, "무통장 입금확인 실패");
+/** 개인결제 취소 — POST /order/privatepay/cancel. body:{ppno}. PG는 승인취소, 무통장 등은 취소 처리. */
+export const cancelPrivatePay = (body) => postJson("order/privatepay/cancel", body, "개인결제 취소 실패");
+/** 현금영수증 발급 — POST /order/privatepay/receipt. body:{ppno, pay_receipt_type(1:소득공제/2:지출증빙), pay_receipt_name, pay_receipt_num, pay_receipt_dt}. 거래 48시간 이내만. */
+export const createPrivatePayReceipt = (body) => postJson("order/privatepay/receipt", body, "현금영수증 발급 실패");
+/** 현금영수증 취소 — DELETE /order/privatepay/receipt?ppno=. 발행완료 + 1년 이내만. */
+export const cancelPrivatePayReceipt = (ppno) => deleteQuery("order/privatepay/receipt", { ppno }, "현금영수증 취소 실패");
+/** 개인결제 메모 목록 — GET /order/privatepay/memo?ppno=. */
+export const listPrivatePayMemos = (ppno) => getJson("order/privatepay/memo", { ppno }, "개인결제 메모 조회 실패");
+/** 개인결제 메모 등록 — POST /order/privatepay/memo. body:{ppno, content}. */
+export const createPrivatePayMemo = (body) => postJson("order/privatepay/memo", body, "개인결제 메모 등록 실패");
+/** 개인결제 메모 삭제 — DELETE /order/privatepay/memo?id=. */
+export const deletePrivatePayMemo = (id) => deleteQuery("order/privatepay/memo", { id }, "개인결제 메모 삭제 실패");
+/** 교환 추가비용 개인결제 발급 — POST /order/privatepay/exchange. body:{eno, price, content?}. ct=21, exchange.ppno 연결. */
+export const createExchangePrivatePay = (body) => postJson("order/privatepay/exchange", body, "교환비용 개인결제 발급 실패");
+/** 반품 추가비용 개인결제 발급 — POST /order/privatepay/refund. body:{rno, price, content?}. ct=11, refund.ppno 연결. */
+export const createRefundPrivatePay = (body) => postJson("order/privatepay/refund", body, "반품비용 개인결제 발급 실패");
+
 /** provision_code → 클라이언트 자격증명 교환 (서버↔서버, 일회성) */
 export async function exchangeProvisionCode(code) {
   const res = await fetch(`${apiBase()}/oauth/register/exchange`, {

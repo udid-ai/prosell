@@ -47,6 +47,10 @@ import {
   getShopCompany, updateShopCompany,
   listBoard, getBoardPost, createBoardPost, updateBoardPost, deleteBoardPost,
   replyBoardPost, deleteBoardReply, getBoardSetup, uploadBoardFiles,
+  listPrivatePays, getPrivatePay, createPrivatePay, updatePrivatePay, deletePrivatePay,
+  confirmPrivatePayBanking, cancelPrivatePay, createPrivatePayReceipt, cancelPrivatePayReceipt,
+  listPrivatePayMemos, createPrivatePayMemo, deletePrivatePayMemo,
+  createExchangePrivatePay, createRefundPrivatePay,
 } from "./api.js";
 import { runConnect } from "./connect.js";
 import { runLogin } from "./login.js";
@@ -72,7 +76,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.16.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.17.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -533,7 +537,8 @@ server.tool(
     "판단 근거(구매자가 낸 배송비 등)는 get_claim_preview 또는 list_refunds 의 paymentInfo 로 확인하고, " +
     "판매자가 최종 결정한 금액을 넣는다. " +
     "★무통장·가상계좌 결제건(get_claim_preview.refund_account.needs_account=true)은 PG 자동취소가 안 되므로 " +
-    "환불계좌(ref_bank_code/ref_bank_num/ref_bank_holder)를 사용자에게 안내·확인해 함께 입력하라.",
+    "환불계좌(ref_bank_code/ref_bank_num/ref_bank_holder)를 사용자에게 안내·확인해 함께 입력하라. " +
+    "★(희박) 반품에서 추가비용을 구매자에게 실제 청구(결제창 발급)해야 하면 반품번호 rno 로 create_refund_private_pay(rno, price) 를 호출하라.",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
     items: claimItems.describe("반품할 상품 목록"),
@@ -642,7 +647,9 @@ server.tool(
     "items[].exc_product_id 에 그 옵션 id 를 지정한다. " +
     "(2) **비용 청구 여부** — 재배송비(exc_del_price)·회수비(exc_ret_price)·**기타비용(exc_deduct_price)**을 구매자에게 청구할지 각각 확인. " +
     "비용/상품을 정하기 전 먼저 get_claim_preview(ono)으로 상품·구매 시 배송비·결제정보를 안내하라. " +
-    "★반품과 달리 교환 비용은 **0 이상 양수만**(구매자 청구·결제요청 금액, 음수 불가).",
+    "★반품과 달리 교환 비용은 **0 이상 양수만**(구매자 청구·결제요청 금액, 음수 불가). " +
+    "★추가비용을 구매자에게 **실제로 청구**(결제창 발급)하려면, 교환 접수로 받은 eno 로 create_exchange_private_pay(eno, price) 를 호출해 " +
+    "개인 결제창을 발급하라(구매자에게 결제 url 발송).",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
     items: exchangeItems.describe("교환할 상품 목록(항목별 exc_product_id 로 동일/다른 상품 교환 결정)"),
@@ -673,6 +680,7 @@ server.tool(
     "(예: exc_ret_parcel=회수 택배사 id, exc_ret_num=회수 운송장번호, exc_ret_zipcode/exc_ret_addr1 등). " +
     "비용은 exc_del_price/exc_ret_price/exc_deduct_price 로 구매자 청구액을 정한다(반품과 달리 **0 이상 양수만**). " +
     "★배송비 청구를 정하거나 묻기 전에 반드시 먼저 get_claim_preview(ono)으로 '구매 시 배송비 OO원'을 사용자에게 안내하라. " +
+    "★추가비용을 구매자에게 실제 청구(결제창 발급)하려면 결제요청(exc_state=22)과 함께 create_exchange_private_pay(eno, price) 를 호출하라. " +
     "사유는 get_claim_reasons 의 exchange 중 선택.",
   {
     eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno) — list_exchanges 의 exchange.eno"),
@@ -2094,6 +2102,184 @@ server.tool(
     "create_board_post/update_board_post/answer_board_post 의 photo(콤마구분)로 넣는다.",
   { files: z.array(z.string()).min(1).max(5).describe("업로드할 로컬 파일 경로(최대 5)") },
   async ({ files }) => { try { return ok(await uploadBoardFiles(files)); } catch (e) { return fail(e.message); } }
+);
+
+// ── 개인결제(private_pay) (운영자) ───────────────────────────────────────────
+// 관리자가 발급/관리하는 개인 결제창. 주문(dno)/반품(rno)/교환(eno)에 연계해 추가비용을 청구한다.
+//  결제유형 ct: 1=주문관련 2=해외배송비 10/11=반품비용(선/후납) 20/21=교환비용(선/후납) 99=기타결제
+//  결제상태 pay_state: 0=발급완료 1=입금대기 10=결제완료 90=취소접수 99=취소완료
+//  결제수단 pay_method: 130=가상계좌·300=무통장(취소 시 계좌이체 환불) / 그 외 PG는 승인취소
+
+server.tool(
+  "list_private_pays",
+  "개인결제(개인 결제창) 목록을 조회한다(운영자). 기간·상태·유형·수신자·번호로 검색한다. " +
+    "pay_state(0=발급완료,1=입금대기,10=결제완료,90=취소접수,99=취소완료), ct(1,2,10,11,20,21,99)는 콤마로 복수 지정 가능. " +
+    "번호검색은 code(ppno|dno|pay_no)+codes(콤마/개행)로 한다.",
+  {
+    page: z.number().int().min(1).optional().describe("페이지(기본 1)"),
+    limit: z.number().int().min(1).max(1000).optional().describe("페이지당 개수(기본 20, 최대 1000)"),
+    period: z.enum(["dt", "pay_dt", "can_dt"]).optional().describe("기간 기준 컬럼(dt=발급/pay_dt=결제/can_dt=취소)"),
+    period_start: z.string().optional().describe("기간 시작 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("기간 종료 YYYY-MM-DD"),
+    pay_state: z.string().optional().describe("결제상태(콤마 구분: 0,1,10,90,99)"),
+    ct: z.string().optional().describe("결제유형(콤마 구분: 1,2,10,11,20,21,99)"),
+    name: z.string().optional().describe("수신자명(정확히 일치)"),
+    email: z.string().optional().describe("이메일(정확히 일치)"),
+    hp: z.string().optional().describe("휴대폰(정확히 일치)"),
+    title: z.string().optional().describe("결제명(부분검색)"),
+    code: z.enum(["ppno", "dno", "pay_no"]).optional().describe("번호검색 항목"),
+    codes: z.string().optional().describe("번호검색 값(콤마/개행 구분, code 와 함께)"),
+    order: z.enum(["1", "2", "3"]).optional().describe("정렬(1=발급최신 2=결제최신 3=취소최신)"),
+  },
+  async (params) => { try { return ok(await listPrivatePays(params)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "get_private_pay",
+  "개인결제 단건 상세를 조회한다(운영자). 결제/입금은행/환불계좌/취소/현금영수증 정보를 포함한다.",
+  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
+  async ({ ppno }) => { try { return ok(await getPrivatePay(ppno)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_private_pay",
+  "개인 결제창을 발급한다(운영자). 발급 즉시 수신자에게 결제 안내 메시지(SMS/알림톡/이메일)가 발송되고, " +
+    "발급된 결제창 정보(data, 결제 url)를 반환한다 — 사용자에게 url·금액·유형을 안내하라. " +
+    "회원은 uid 로(자동 수신자정보), 비회원은 name/hp/email 을 직접 넣는다. 주문 연계 시 dno/rno/eno 를 함께 보낸다.",
+  {
+    ct: z.number().int().describe("결제유형(1=주문관련 2=해외배송비 10/11=반품비용 20/21=교환비용 99=기타)"),
+    price: z.union([z.number().int(), z.string()]).describe("결제금액(원, 0 초과)"),
+    uid: z.string().optional().describe("회원 아이디(회원 발급 시). dno 와 함께면 주문자 일치 검증"),
+    name: z.string().optional().describe("수신자명(비회원)"),
+    hp: z.string().optional().describe("수신자 휴대폰(숫자 10~11자리)"),
+    email: z.string().optional().describe("수신자 이메일"),
+    dno: z.union([z.number().int(), z.string()]).optional().describe("관련 주문번호(dno)"),
+    rno: z.union([z.number().int(), z.string()]).optional().describe("반품번호(rno)"),
+    eno: z.union([z.number().int(), z.string()]).optional().describe("교환번호(eno)"),
+    content: z.string().optional().describe("결제 안내 메시지/메모"),
+    pg_id: z.number().int().optional().describe("결제대행사(PG) id — 미지정 시 기본 PG"),
+  },
+  async (body) => { try { return ok(await createPrivatePay(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "update_private_pay",
+  "개인결제를 수정한다(운영자). 발급완료(pay_state=0)면 ct/price/dno/content/pg_id 를 수정하고, " +
+    "결제 후에는 무통장 입금정보(pay_bank_*)·환불계좌(refund_bank_*)만 수정한다.",
+  {
+    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
+    ct: z.number().int().optional().describe("결제유형(발급완료 상태만)"),
+    price: z.union([z.number().int(), z.string()]).optional().describe("결제금액(발급완료 상태만)"),
+    dno: z.union([z.number().int(), z.string()]).optional().describe("관련 주문번호(발급완료 상태만)"),
+    content: z.string().optional().describe("안내 메시지/메모(발급완료 상태만)"),
+    pg_id: z.number().int().optional().describe("PG id(발급완료 상태만)"),
+    pay_bank_code: z.string().optional().describe("(무통장) 입금은행 코드"),
+    pay_bank_num: z.string().optional().describe("(무통장) 입금 계좌번호"),
+    pay_bank_holder: z.string().optional().describe("(무통장) 입금 예금주"),
+    pay_bank_name: z.string().optional().describe("(무통장) 입금자명"),
+    refund_bank_code: z.string().optional().describe("환불 은행 코드"),
+    refund_bank_num: z.string().optional().describe("환불 계좌번호"),
+    refund_bank_holder: z.string().optional().describe("환불 예금주"),
+    refund_bank_title: z.string().optional().describe("환불 은행명"),
+  },
+  async ({ ppno, ...body }) => { try { return ok(await updatePrivatePay(ppno, body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_private_pay",
+  "개인결제를 삭제한다(운영자). 발급완료(0) 또는 취소완료(99) 상태만 삭제 가능하다(메모도 함께 삭제).",
+  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
+  async ({ ppno }) => { try { return ok(await deletePrivatePay(ppno)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "confirm_private_pay_banking",
+  "무통장입금 개인결제의 입금을 확인 처리한다(운영자). 결제완료(pay_state=10)로 변경된다. " +
+    "이미 결제완료된 건은 처리되지 않는다.",
+  {
+    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
+    pay_bank_code: z.string().optional().describe("입금받은 은행 코드"),
+    pay_bank_name: z.string().optional().describe("입금자명"),
+  },
+  async (body) => { try { return ok(await confirmPrivatePayBanking(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "cancel_private_pay",
+  "개인결제를 취소한다(운영자). PG 결제건은 승인취소가 실행되고, 무통장 등은 취소 접수/완료로 처리된다. " +
+    "현금영수증 발행완료 건은 함께 취소 시도된다. 이미 취소완료된 건은 처리되지 않는다.",
+  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
+  async ({ ppno }) => { try { return ok(await cancelPrivatePay({ ppno })); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_private_pay_receipt",
+  "개인결제 건에 현금영수증을 발급한다(운영자). 거래일시(pay_receipt_dt) 기준 48시간 이내만 가능하다.",
+  {
+    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
+    pay_receipt_type: z.number().int().describe("발급용도(1=소득공제, 2=지출증빙)"),
+    pay_receipt_name: z.string().describe("발급 대상 이름(소득공제) 또는 사업자번호 명의"),
+    pay_receipt_num: z.string().describe("휴대폰번호(소득공제) 또는 사업자등록번호(지출증빙)"),
+    pay_receipt_dt: z.string().describe("거래일시 YYYY-MM-DD HH:MM:SS(48시간 이내)"),
+  },
+  async (body) => { try { return ok(await createPrivatePayReceipt(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "cancel_private_pay_receipt",
+  "개인결제 건의 현금영수증을 취소한다(운영자). 발행완료 상태이면서 발행 1년 이내만 가능하다.",
+  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
+  async ({ ppno }) => { try { return ok(await cancelPrivatePayReceipt(ppno)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "list_private_pay_memos",
+  "개인결제 건의 관리 메모 목록을 조회한다(운영자).",
+  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
+  async ({ ppno }) => { try { return ok(await listPrivatePayMemos(ppno)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_private_pay_memo",
+  "개인결제 건에 관리 메모를 등록한다(운영자). 작성자는 로그인한 운영자다.",
+  {
+    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
+    content: z.string().describe("메모 내용"),
+  },
+  async (body) => { try { return ok(await createPrivatePayMemo(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "delete_private_pay_memo",
+  "개인결제 관리 메모를 삭제한다(운영자).",
+  { id: z.union([z.number().int(), z.string()]).describe("메모 id(list_private_pay_memos 의 items[].id)") },
+  async ({ id }) => { try { return ok(await deletePrivatePayMemo(id)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_exchange_private_pay",
+  "교환 추가비용 개인결제를 발급한다(운영자). 교환(eno) 진행 중 재배송비/회수비/기타 추가비용을 구매자에게 " +
+    "청구할 때 사용한다. ct=21(교환비용)로 발급되고 해당 교환건(exchange.ppno)에 연결되며 결제 안내 메시지가 발송된다. " +
+    "발급된 결제창 정보(data, url)를 사용자에게 안내하라. (보통 update_exchange 로 결제요청 상태(22) 처리와 함께 쓴다)",
+  {
+    eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno)"),
+    price: z.union([z.number().int(), z.string()]).describe("추가 청구금액(원, 0 초과)"),
+    content: z.string().optional().describe("결제 안내 메시지(추가비용 사유 등)"),
+  },
+  async (body) => { try { return ok(await createExchangePrivatePay(body)); } catch (e) { return fail(e.message); } }
+);
+
+server.tool(
+  "create_refund_private_pay",
+  "반품 추가비용 개인결제를 발급한다(운영자, 희박한 유형). 반품(rno) 진행 중 배송비/회수비/기타 추가비용을 " +
+    "구매자에게 청구할 때 사용한다. ct=11(반품비용)로 발급되고 해당 반품건(refund.ppno)에 연결되며 안내 메시지가 발송된다. " +
+    "발급된 결제창 정보(data, url)를 사용자에게 안내하라.",
+  {
+    rno: z.union([z.number().int(), z.string()]).describe("반품번호(rno)"),
+    price: z.union([z.number().int(), z.string()]).describe("추가 청구금액(원, 0 초과)"),
+    content: z.string().optional().describe("결제 안내 메시지(추가비용 사유 등)"),
+  },
+  async (body) => { try { return ok(await createRefundPrivatePay(body)); } catch (e) { return fail(e.message); } }
 );
 
 // 시작 시 PROSELL_SHOP 이 주어지면 저장(다음 실행부터 생략 가능)

@@ -18,7 +18,7 @@ import {
   listCancels, createCancel, updateCancel, rejectCancel,
   listRefunds, createRefund, updateRefund, rejectRefund,
   listExchanges, createExchange, updateExchange, rejectExchange,
-  getClaimShipping,
+  getClaimPreview,
   getClaimReasons, updateClaimReasons,
   listCouriers, createCourier, updateCourier, deleteCourier,
   createProduct, updateProduct, deleteProduct, getProductOption, uploadProductImages,
@@ -72,7 +72,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.11.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.13.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -511,10 +511,12 @@ server.tool(
 server.tool(
   "create_refund",
   "반품 접수 — 주문(ono)의 상품(prno·수량)을 반품요청한다(운영자). 사유(ref_ct) 필수. " +
+    "★배송비 부담을 정하거나 사용자에게 묻기 전에, 반드시 먼저 get_claim_preview(ono)을 호출해 " +
+    "'구매 시 배송비 OO원'을 사용자에게 안내한 뒤 진행하라(안내 없이 비용을 정하지 말 것). " +
     "비용(배송비/회수비/기타)을 청구·부담시키려면 ref_del_price/ref_ret_price/ref_deduct_price 를 넣는다. " +
     "★비용 부호 규칙: **음수=구매자 부담(환불액에서 차감), 0 이상=판매자 부담**. " +
-    "판단 근거(구매자가 낸 배송비 등)는 list_refunds 의 paymentInfo(ref_delivery_price=구매자 결제 배송비, " +
-    "ref_price=상품 환불액 등)로 확인하고, 판매자가 최종 결정한 금액을 넣는다.",
+    "판단 근거(구매자가 낸 배송비 등)는 get_claim_preview 또는 list_refunds 의 paymentInfo 로 확인하고, " +
+    "판매자가 최종 결정한 금액을 넣는다.",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
     items: claimItems.describe("반품할 상품 목록"),
@@ -544,7 +546,7 @@ server.tool(
     "상태(ref_state)·반품자명(ref_name) 등. 회수지/회수 운송장 등은 addressInfo 객체로 보낸다 " +
     "(예: ref_ret_parcel=회수 택배사 id, ref_ret_num=회수 운송장번호, ref_ret_zipcode/ref_ret_addr1 등). " +
     "비용은 ref_del_price/ref_ret_price/ref_deduct_price 로 차감/부담을 정한다(음수=구매자 부담, 0이상=판매자 부담). " +
-    "반품완료(ref_state=30) 처리 전, list_refunds 의 paymentInfo 로 구매자 결제 배송비 등을 확인하고 비용을 확정하라. " +
+    "★배송비 부담을 정하거나 묻기 전에 반드시 먼저 get_claim_preview(ono)으로 '구매 시 배송비 OO원'을 사용자에게 안내하라. " +
     "사유는 get_claim_reasons 의 refund 중 선택.",
   {
     rno: z.union([z.number().int(), z.string()]).describe("반품번호(rno) — list_refunds 의 refund.rno"),
@@ -605,9 +607,10 @@ server.tool(
 server.tool(
   "create_exchange",
   "교환 접수 — 주문(ono)의 상품(prno·수량)을 교환요청한다(운영자). 사유(exc_ct) 필수. " +
+    "★배송비 청구를 정하거나 사용자에게 묻기 전에, 반드시 먼저 get_claim_preview(ono)으로 " +
+    "'구매 시 배송비 OO원'을 사용자에게 안내한 뒤 진행하라. " +
     "교환 비용(구매자 청구)을 정하려면 exc_del_price/exc_ret_price/exc_deduct_price 를 넣는다. " +
-    "★반품과 달리 교환 비용은 **0 이상 양수만**(구매자에게 청구·결제요청하는 금액, 음수 불가). " +
-    "판단 근거는 list_exchanges 의 paymentInfo 로 확인한다.",
+    "★반품과 달리 교환 비용은 **0 이상 양수만**(구매자에게 청구·결제요청하는 금액, 음수 불가).",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
     items: claimItems.describe("교환할 상품 목록"),
@@ -637,7 +640,8 @@ server.tool(
     "상태(exc_state)·교환자명(exc_name) 등. 회수지/회수 운송장 등은 addressInfo 객체로 보낸다 " +
     "(예: exc_ret_parcel=회수 택배사 id, exc_ret_num=회수 운송장번호, exc_ret_zipcode/exc_ret_addr1 등). " +
     "비용은 exc_del_price/exc_ret_price/exc_deduct_price 로 구매자 청구액을 정한다(반품과 달리 **0 이상 양수만**). " +
-    "결제요청(exc_state=22) 전 list_exchanges 의 paymentInfo 로 금액을 확인·확정하라. 사유는 get_claim_reasons 의 exchange 중 선택.",
+    "★배송비 청구를 정하거나 묻기 전에 반드시 먼저 get_claim_preview(ono)으로 '구매 시 배송비 OO원'을 사용자에게 안내하라. " +
+    "사유는 get_claim_reasons 의 exchange 중 선택.",
   {
     eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno) — list_exchanges 의 exchange.eno"),
     exc_state: z.number().int().optional().describe("교환상태: 10=교환접수 20=회수중 21=검수중/수거완료 22=결제요청 29=재배송중 30=교환완료"),
@@ -674,19 +678,21 @@ server.tool(
   }
 );
 
-// ── 클레임 배송비 안내 ────────────────────────────────────────────────────
+// ── 클레임 접수 미리보기 ──────────────────────────────────────────────────
 server.tool(
-  "get_claim_shipping",
-  "반품/교환 시 배송비 결정을 위한 안내 도구(운영자). 주문(ono)의 배송그룹별 '구매 시 배송비'를 요약한다: " +
-    "paid_delivery_price(구매자가 결제한 배송비)·delivery_payment(선/착불)·free_threshold(무료배송 기준)·" +
-    "delivery_cost(배송 원가). 이 값을 구매자에게 안내하고, 판매자가 왕복 배송비(보내는+회수)를 결정하라. " +
-    "왕복은 보내는(출고)=ref_del_price/exc_del_price, 회수=ref_ret_price/exc_ret_price 로 나눠 입력한다 " +
-    "(반품은 음수=구매자 부담, 교환은 0이상 양수=구매자 청구). 그 뒤 create/update_refund·exchange 로 반영.",
+  "get_claim_preview",
+  "반품/교환 접수 초기 안내용(운영자). 주문(ono)의 **대상 상품 기본정보 + 배송비 + 결제정보**를 한 번에 요약한다. " +
+    "반환: payment(결제정보 — 결제번호/결제수단/총 결제금액/포인트/결제일), " +
+    "groups[].items(상품 — prno/상품명/옵션/수량/단가/주문상태), " +
+    "groups[].shipping(배송 — paid_delivery_price=구매 시 결제 배송비/선착불/무료배송기준/배송원가). " +
+    "반품·교환 접수 시작 시 이 내용을 먼저 사용자에게 안내한 뒤, 왕복 배송비(보내는+회수)를 결정하라 " +
+    "(보내는=*_del_price, 회수=*_ret_price; 반품은 음수=구매자 부담, 교환은 0이상 양수=구매자 청구). " +
+    "그 뒤 create/update_refund·exchange 로 반영한다.",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
   },
   async ({ ono }) => {
-    try { return ok(await getClaimShipping(ono)); } catch (e) { return fail(e.message); }
+    try { return ok(await getClaimPreview(ono)); } catch (e) { return fail(e.message); }
   }
 );
 

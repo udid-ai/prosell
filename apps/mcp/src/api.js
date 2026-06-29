@@ -318,33 +318,71 @@ export const updateExchange = (eno, body) => putById("order/exchange", eno, body
 /** 교환 거부 — DELETE /order/exchange/{eno}. */
 export const rejectExchange = (eno) => deleteById("order/exchange", eno, "교환 거부 실패");
 
-/** 클레임(반품/교환) 배송비 안내 — 주문(ono)의 배송그룹별 '구매 시 배송비/선착불/무료배송기준/배송원가'를
- *  요약한다. 반품·교환 왕복 배송비를 결정하기 전 구매자에게 안내하고 판단 근거로 쓴다.
- *  왕복 청구는 보내는(출고) = *_del_price, 회수 = *_ret_price 로 나눠 입력한다. */
-export async function getClaimShipping(ono) {
-  const data = await getOrder(ono, "order,delivery,product");
+/** 클레임(반품/교환) 접수 미리보기 — 주문(ono)의 '상품 기본정보 + 배송비 + 결제정보'를 한 번에 요약.
+ *  반품·교환 접수 초기에 사용자에게 대상 상품·배송비·결제내역을 먼저 안내하고, 비용 결정 근거로 쓴다.
+ *  왕복 배송비 청구는 보내는(출고) = *_del_price, 회수 = *_ret_price 로 나눠 입력한다. */
+export async function getClaimPreview(ono) {
+  const data = await getOrder(ono, "order,payment,product,delivery");
   const list = Array.isArray(data?.items) ? data.items : [];
+
+  // 결제정보 요약(주문 단위 — 첫 항목 기준)
+  let payment = null;
+  const p0 = list.find((it) => it?.payment)?.payment;
+  if (p0) {
+    payment = {
+      pno: p0.pno,                          // 결제번호
+      pay_method: p0.pay_method,            // 결제수단 코드
+      pay_currency: p0.pay_currency,
+      pay_price: p0.pay_price,              // 총 결제금액
+      pay_point_price: p0.pay_point_price,  // 사용 포인트
+      pay_discount_price: p0.pay_discount_price,
+      pay_dt: p0.pay_dt,                    // 결제일시
+    };
+  }
+
+  // 배송그룹(dno)별 배송비 + 대상 상품 목록
   const groups = new Map();
   for (const it of list) {
     const d = it?.delivery;
-    if (!d) continue;
-    const dno = d.dno ?? it?.product?.dno ?? null;
-    if (dno == null || groups.has(dno)) continue;
-    groups.set(dno, {
-      dno,
-      paid_delivery_price: d.del_price,   // 구매 시 결제한 배송비
-      delivery_payment: d.del_payment,    // 선/착불 구분(0=선불 등)
-      free_threshold: d.del_free_price,   // 무료배송 기준금액(0=해당없음)
-      delivery_cost: d.del_cost_price,    // 배송 원가
-      charge_price: d.del_charge_price,
-    });
+    const pr = it?.product;
+    const dno = d?.dno ?? pr?.dno ?? null;
+    if (dno == null) continue;
+    if (!groups.has(dno)) {
+      groups.set(dno, {
+        dno,
+        shipping: d
+          ? {
+              paid_delivery_price: d.del_price,  // 구매 시 결제 배송비
+              delivery_payment: d.del_payment,   // 선/착불 구분(0=선불 등)
+              free_threshold: d.del_free_price,  // 무료배송 기준금액(0=해당없음)
+              delivery_cost: d.del_cost_price,   // 배송 원가
+            }
+          : null,
+        items: [],
+      });
+    }
+    if (pr) {
+      const opt = [pr.products_option_first, pr.products_option_second, pr.products_option_third]
+        .filter(Boolean).join(" / ");
+      groups.get(dno).items.push({
+        prno: pr.prno,                       // 상품주문번호
+        products_id: pr.products_id,
+        products_title: pr.products_title,   // 상품명
+        option: opt || pr.option_name || null,
+        quantity: pr.pro_quantity,           // 수량
+        price: pr.pro_price,                 // 결제 단가
+        pro_state: pr.pro_state,             // 상품 주문상태 코드
+      });
+    }
   }
+
   return {
     ono,
-    shipping_groups: [...groups.values()],
+    payment,
+    groups: [...groups.values()],
     guide:
-      "paid_delivery_price = 구매 시 결제 배송비(이 금액을 구매자에게 안내). " +
-      "왕복 배송비 청구는 보내는(출고)=ref_del_price/exc_del_price, 회수=ref_ret_price/exc_ret_price 로 나눠 입력. " +
+      "반품/교환 접수 초기: 위 상품(groups[].items)·배송비(groups[].shipping.paid_delivery_price)·결제정보(payment)를 " +
+      "먼저 사용자에게 안내한 뒤 비용을 결정하라. 왕복 배송비는 보내는(출고)=*_del_price, 회수=*_ret_price 로 나눠 입력. " +
       "반품은 음수=구매자 부담(환불액 차감), 교환은 0 이상 양수(구매자 청구).",
   };
 }

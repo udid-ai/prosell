@@ -71,7 +71,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.8.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.10.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -489,7 +489,10 @@ const claimItems = z
 
 server.tool(
   "list_refunds",
-  "반품내역 목록을 조회한다(운영자). 결과의 refund.rno=반품번호.",
+  "반품내역 목록을 조회한다(운영자). 결과의 refund.rno=반품번호. " +
+    "응답의 paymentInfo 에 비용 판단 근거가 있다: ref_delivery_price(구매자가 결제한 배송비)·ref_price(상품 환불액)·" +
+    "ref_free_price(무료배송 기준) 등. 현재 차감 설정값은 ref_del_price/ref_ret_price/ref_deduct_price(음수=구매자 부담). " +
+    "비용 차감은 update_refund/create_refund 로 판매자가 최종 결정해 반영한다.",
   {
     period_start: z.string().optional().describe("YYYY-MM-DD"),
     period_end: z.string().optional().describe("YYYY-MM-DD"),
@@ -506,18 +509,31 @@ server.tool(
 
 server.tool(
   "create_refund",
-  "반품 접수 — 주문(ono)의 상품(prno·수량)을 반품요청한다(운영자). 사유(ref_ct) 필수.",
+  "반품 접수 — 주문(ono)의 상품(prno·수량)을 반품요청한다(운영자). 사유(ref_ct) 필수. " +
+    "비용(배송비/회수비/기타)을 청구·부담시키려면 ref_del_price/ref_ret_price/ref_deduct_price 를 넣는다. " +
+    "★비용 부호 규칙: **음수=구매자 부담(환불액에서 차감), 0 이상=판매자 부담**. " +
+    "판단 근거(구매자가 낸 배송비 등)는 list_refunds 의 paymentInfo(ref_delivery_price=구매자 결제 배송비, " +
+    "ref_price=상품 환불액 등)로 확인하고, 판매자가 최종 결정한 금액을 넣는다.",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
     items: claimItems.describe("반품할 상품 목록"),
     ref_ct: z.string().describe("반품 사유 — get_claim_reasons 의 refund 카테고리 중 선택"),
     ref_content: z.string().optional().describe("반품 상세 내용"),
+    ref_del_price: z.number().int().optional().describe("상품 배송비용 — 음수=구매자 부담, 0이상=판매자 부담(무료배송 상품에 배송비 청구 시 입력)"),
+    ref_ret_price: z.number().int().optional().describe("상품 회수비용 — 음수=구매자 부담, 0이상=판매자 부담"),
+    ref_deduct_price: z.number().int().optional().describe("기타비용 — 음수=구매자 부담, 0이상=판매자 부담"),
   },
-  async ({ ono, items, ref_ct, ref_content }) => {
-    // 백엔드 규격: 사유는 refund 객체로 중첩 — { ono, items, refund:{ref_ct, ref_content} }
+  async ({ ono, items, ref_ct, ref_content, ref_del_price, ref_ret_price, ref_deduct_price }) => {
+    // 백엔드 규격: 사유는 refund 객체, 비용은 paymentInfo 객체로 중첩.
     const refund = { ref_ct };
     if (ref_content !== undefined) refund.ref_content = ref_content;
-    try { return ok(await createRefund({ ono, items, refund })); } catch (e) { return fail(e.message); }
+    const paymentInfo = {};
+    if (ref_del_price !== undefined) paymentInfo.ref_del_price = ref_del_price;
+    if (ref_ret_price !== undefined) paymentInfo.ref_ret_price = ref_ret_price;
+    if (ref_deduct_price !== undefined) paymentInfo.ref_deduct_price = ref_deduct_price;
+    const body = { ono, items, refund };
+    if (Object.keys(paymentInfo).length) body.paymentInfo = paymentInfo;
+    try { return ok(await createRefund(body)); } catch (e) { return fail(e.message); }
   }
 );
 
@@ -526,6 +542,8 @@ server.tool(
   "반품내역을 수정한다(운영자). 반품번호(rno)와 바꿀 필드만 보낸다. 사유(ref_ct)·상세(ref_content)·" +
     "상태(ref_state)·반품자명(ref_name) 등. 회수지/회수 운송장 등은 addressInfo 객체로 보낸다 " +
     "(예: ref_ret_parcel=회수 택배사 id, ref_ret_num=회수 운송장번호, ref_ret_zipcode/ref_ret_addr1 등). " +
+    "비용은 ref_del_price/ref_ret_price/ref_deduct_price 로 차감/부담을 정한다(음수=구매자 부담, 0이상=판매자 부담). " +
+    "반품완료(ref_state=30) 처리 전, list_refunds 의 paymentInfo 로 구매자 결제 배송비 등을 확인하고 비용을 확정하라. " +
     "사유는 get_claim_reasons 의 refund 중 선택.",
   {
     rno: z.union([z.number().int(), z.string()]).describe("반품번호(rno) — list_refunds 의 refund.rno"),
@@ -534,11 +552,21 @@ server.tool(
     ref_content: z.string().optional().describe("반품 상세 내용"),
     ref_name: z.string().optional().describe("반품자명"),
     ref_request: z.string().optional().describe("요청사항"),
+    ref_del_price: z.number().int().optional().describe("상품 배송비용 — 음수=구매자 부담, 0이상=판매자 부담"),
+    ref_ret_price: z.number().int().optional().describe("상품 회수비용 — 음수=구매자 부담, 0이상=판매자 부담"),
+    ref_deduct_price: z.number().int().optional().describe("기타비용 — 음수=구매자 부담, 0이상=판매자 부담"),
     addressInfo: z.record(z.any()).optional().describe("회수지·회수 운송장 등(ref_ret_parcel/ref_ret_num/ref_ret_zipcode/ref_ret_addr1...)"),
   },
-  async ({ rno, addressInfo, ...refund }) => {
+  async ({ rno, addressInfo, ref_del_price, ref_ret_price, ref_deduct_price, ...refund }) => {
     try {
-      const body = { refund, ...(addressInfo ? { addressInfo } : {}) };
+      // refund(사유/상태/이름) · paymentInfo(비용) · addressInfo(회수지) 로 분리 중첩
+      const body = { refund };
+      const paymentInfo = {};
+      if (ref_del_price !== undefined) paymentInfo.ref_del_price = ref_del_price;
+      if (ref_ret_price !== undefined) paymentInfo.ref_ret_price = ref_ret_price;
+      if (ref_deduct_price !== undefined) paymentInfo.ref_deduct_price = ref_deduct_price;
+      if (Object.keys(paymentInfo).length) body.paymentInfo = paymentInfo;
+      if (addressInfo) body.addressInfo = addressInfo;
       return ok(await updateRefund(rno, body));
     } catch (e) { return fail(e.message); }
   }
@@ -555,7 +583,10 @@ server.tool(
 
 server.tool(
   "list_exchanges",
-  "교환내역 목록을 조회한다(운영자). 결과의 exchange.eno=교환번호.",
+  "교환내역 목록을 조회한다(운영자). 결과의 exchange.eno=교환번호. " +
+    "응답의 paymentInfo 에 비용 판단 근거가 있다: exc_price(교환 결제요청 금액)·exc_del_price(배송비)·" +
+    "exc_ret_price(회수비)·exc_deduct_price(기타). 교환은 반품과 달리 구매자에게 청구하는 **양수** 금액이다. " +
+    "비용은 update_exchange/create_exchange 로 판매자가 정해 결제요청(상태 22)에 반영한다.",
   {
     period_start: z.string().optional().describe("YYYY-MM-DD"),
     period_end: z.string().optional().describe("YYYY-MM-DD"),
@@ -572,18 +603,30 @@ server.tool(
 
 server.tool(
   "create_exchange",
-  "교환 접수 — 주문(ono)의 상품(prno·수량)을 교환요청한다(운영자). 사유(exc_ct) 필수.",
+  "교환 접수 — 주문(ono)의 상품(prno·수량)을 교환요청한다(운영자). 사유(exc_ct) 필수. " +
+    "교환 비용(구매자 청구)을 정하려면 exc_del_price/exc_ret_price/exc_deduct_price 를 넣는다. " +
+    "★반품과 달리 교환 비용은 **0 이상 양수만**(구매자에게 청구·결제요청하는 금액, 음수 불가). " +
+    "판단 근거는 list_exchanges 의 paymentInfo 로 확인한다.",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
     items: claimItems.describe("교환할 상품 목록"),
     exc_ct: z.string().describe("교환 사유 — get_claim_reasons 의 exchange 카테고리 중 선택"),
     exc_content: z.string().optional().describe("교환 상세 내용"),
+    exc_del_price: z.number().int().min(0).optional().describe("상품 배송비용 — 구매자 청구액(0 이상). 음수 불가"),
+    exc_ret_price: z.number().int().min(0).optional().describe("상품 회수비용 — 구매자 청구액(0 이상)"),
+    exc_deduct_price: z.number().int().min(0).optional().describe("기타비용 — 구매자 청구액(0 이상)"),
   },
-  async ({ ono, items, exc_ct, exc_content }) => {
-    // 백엔드 규격: 사유는 exchange 객체로 중첩 — { ono, items, exchange:{exc_ct, exc_content} }
+  async ({ ono, items, exc_ct, exc_content, exc_del_price, exc_ret_price, exc_deduct_price }) => {
+    // 백엔드 규격: 사유는 exchange 객체, 비용은 paymentInfo 객체로 중첩.
     const exchange = { exc_ct };
     if (exc_content !== undefined) exchange.exc_content = exc_content;
-    try { return ok(await createExchange({ ono, items, exchange })); } catch (e) { return fail(e.message); }
+    const paymentInfo = {};
+    if (exc_del_price !== undefined) paymentInfo.exc_del_price = exc_del_price;
+    if (exc_ret_price !== undefined) paymentInfo.exc_ret_price = exc_ret_price;
+    if (exc_deduct_price !== undefined) paymentInfo.exc_deduct_price = exc_deduct_price;
+    const body = { ono, items, exchange };
+    if (Object.keys(paymentInfo).length) body.paymentInfo = paymentInfo;
+    try { return ok(await createExchange(body)); } catch (e) { return fail(e.message); }
   }
 );
 
@@ -592,7 +635,8 @@ server.tool(
   "교환내역을 수정한다(운영자). 교환번호(eno)와 바꿀 필드만 보낸다. 사유(exc_ct)·상세(exc_content)·" +
     "상태(exc_state)·교환자명(exc_name) 등. 회수지/회수 운송장 등은 addressInfo 객체로 보낸다 " +
     "(예: exc_ret_parcel=회수 택배사 id, exc_ret_num=회수 운송장번호, exc_ret_zipcode/exc_ret_addr1 등). " +
-    "사유는 get_claim_reasons 의 exchange 중 선택.",
+    "비용은 exc_del_price/exc_ret_price/exc_deduct_price 로 구매자 청구액을 정한다(반품과 달리 **0 이상 양수만**). " +
+    "결제요청(exc_state=22) 전 list_exchanges 의 paymentInfo 로 금액을 확인·확정하라. 사유는 get_claim_reasons 의 exchange 중 선택.",
   {
     eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno) — list_exchanges 의 exchange.eno"),
     exc_state: z.number().int().optional().describe("교환상태: 10=교환접수 20=회수중 21=검수중/수거완료 22=결제요청 29=재배송중 30=교환완료"),
@@ -600,11 +644,21 @@ server.tool(
     exc_content: z.string().optional().describe("교환 상세 내용"),
     exc_name: z.string().optional().describe("교환자명"),
     exc_request: z.string().optional().describe("요청사항"),
+    exc_del_price: z.number().int().min(0).optional().describe("상품 배송비용 — 구매자 청구액(0 이상). 음수 불가"),
+    exc_ret_price: z.number().int().min(0).optional().describe("상품 회수비용 — 구매자 청구액(0 이상)"),
+    exc_deduct_price: z.number().int().min(0).optional().describe("기타비용 — 구매자 청구액(0 이상)"),
     addressInfo: z.record(z.any()).optional().describe("회수지·회수 운송장 등(exc_ret_parcel/exc_ret_num/exc_ret_zipcode/exc_ret_addr1...)"),
   },
-  async ({ eno, addressInfo, ...exchange }) => {
+  async ({ eno, addressInfo, exc_del_price, exc_ret_price, exc_deduct_price, ...exchange }) => {
     try {
-      const body = { exchange, ...(addressInfo ? { addressInfo } : {}) };
+      // exchange(사유/상태/이름) · paymentInfo(비용) · addressInfo(회수지) 로 분리 중첩
+      const body = { exchange };
+      const paymentInfo = {};
+      if (exc_del_price !== undefined) paymentInfo.exc_del_price = exc_del_price;
+      if (exc_ret_price !== undefined) paymentInfo.exc_ret_price = exc_ret_price;
+      if (exc_deduct_price !== undefined) paymentInfo.exc_deduct_price = exc_deduct_price;
+      if (Object.keys(paymentInfo).length) body.paymentInfo = paymentInfo;
+      if (addressInfo) body.addressInfo = addressInfo;
       return ok(await updateExchange(eno, body));
     } catch (e) { return fail(e.message); }
   }

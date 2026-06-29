@@ -713,6 +713,20 @@ export const createExchangePrivatePay = (body) => postJson("order/privatepay/exc
 /** 반품 추가비용 개인결제 발급 — POST /order/privatepay/refund. body:{rno, price, content?}. ct=11, refund.ppno 연결. */
 export const createRefundPrivatePay = (body) => postJson("order/privatepay/refund", body, "반품비용 개인결제 발급 실패");
 
+// ── 현금영수증 관리(Cash) (운영자) — 모두 isToken()=admin ──────────────────────
+// 주문 결제(pno) 대상 현금영수증. private_pay(개인결제)와 별개.
+//  발행상태 pay_receipt_state: 1=신청안함 2=발행요청 3=발행완료 4=취소완료
+//  용도구분 pay_receipt_type: 1=소득공제(휴대폰) 2=지출증빙(사업자) 3=세금계산서 4=자진발급
+//  발행은 결제완료(pay_state=10) + 발행일시 48시간 이내, 취소는 발행완료 + 1년 이내.
+/** 현금영수증 내역 — GET /order/cash. 기간/발행상태/주문상태/수신자/번호 검색. */
+export const listCashReceipts = (params = {}) => getJson("order/cash", params, "현금영수증 내역 조회 실패");
+/** 현금영수증 단건 조회 — GET /order/cash/{pno}. 발행정보 + 발행가능금액(receipt_amount). */
+export const getCashReceipt = (pno) => getJson(`order/cash/${encodeURIComponent(pno)}`, {}, "현금영수증 조회 실패");
+/** 현금영수증 발행 — POST /order/cash/issue. body:{pno, pay_receipt_type(1/2), pay_receipt_name, pay_receipt_num, pay_receipt_dt}. */
+export const issueCashReceipt = (body) => postJson("order/cash/issue", body, "현금영수증 발행 실패");
+/** 현금영수증 발행취소 — POST /order/cash/cancel. body:{pno}. 발행완료 + 1년 이내만. */
+export const cancelCashReceipt = (pno) => postJson("order/cash/cancel", { pno }, "현금영수증 발행취소 실패");
+
 /** provision_code → 클라이언트 자격증명 교환 (서버↔서버, 일회성) */
 export async function exchangeProvisionCode(code) {
   const res = await fetch(`${apiBase()}/oauth/register/exchange`, {

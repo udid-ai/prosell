@@ -51,6 +51,7 @@ import {
   confirmPrivatePayBanking, cancelPrivatePay, createPrivatePayReceipt, cancelPrivatePayReceipt,
   listPrivatePayMemos, createPrivatePayMemo, deletePrivatePayMemo,
   createExchangePrivatePay, createRefundPrivatePay,
+  listCashReceipts, getCashReceipt, issueCashReceipt, cancelCashReceipt,
 } from "./api.js";
 import { runConnect } from "./connect.js";
 import { runLogin } from "./login.js";
@@ -76,7 +77,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.17.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.20.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -442,43 +443,19 @@ server.tool(
 );
 
 // ── 클레임(취소·반품·교환) ─────────────────────────────────────────────────
-server.tool(
-  "get_claim_reasons",
-  "취소·반품·교환의 사유 카테고리(선택지)를 조회한다(운영자). " +
-    "create_cancel/create_refund/create_exchange 의 사유(can_ct/ref_ct/exc_ct)는 자유 입력이 아니라 " +
-    "여기서 조회한 해당 유형의 사유 중에서 골라 넣어야 한다.",
-  {},
-  async () => {
-    try {
-      return ok(await getClaimReasons());
-    } catch (e) {
-      return fail(e.message);
-    }
-  }
-);
-
-server.tool(
-  "update_claim_reasons",
-  "취소·반품·교환 사유 카테고리를 업데이트한다(운영자). 보낸 유형만 **전체 교체**(부분추가 아님)한다. " +
-    "취소는 제목 문자열 목록, 반품·교환은 {title, price(반품/교환 배송비)} 목록. " +
-    "기존 목록을 유지하려면 get_claim_reasons 로 받아 수정 후 전체를 다시 보낸다.",
+crudTool(
+  "claim_reasons",
+  "취소·반품·교환 사유 카테고리. action: get|update. get 은 선택지 조회 — create_cancel/refund/exchange 의 사유(can_ct/ref_ct/exc_ct)는 " +
+    "여기 해당 유형 사유 중에서 골라 넣는다. update 는 보낸 유형만 **전체 교체**(취소=제목 목록, 반품·교환={title,price} 목록; " +
+    "유지하려면 get 으로 받아 수정 후 전체 재전송).",
   {
-    cancel: z.array(z.string()).optional().describe("취소 사유 제목 목록(전체 교체)"),
-    refund: z
-      .array(z.object({ title: z.string(), price: z.number().int().min(0).optional() }))
-      .optional()
-      .describe("반품 사유 {제목, 배송비} 목록(전체 교체)"),
-    exchange: z
-      .array(z.object({ title: z.string(), price: z.number().int().min(0).optional() }))
-      .optional()
-      .describe("교환 사유 {제목, 배송비} 목록(전체 교체)"),
+    get: () => getClaimReasons(),
+    update: ({ cancel, refund, exchange }) => updateClaimReasons({ cancel, refund, exchange }),
   },
-  async (body) => {
-    try {
-      return ok(await updateClaimReasons(body));
-    } catch (e) {
-      return fail(e.message);
-    }
+  {
+    cancel: z.array(z.string()).optional().describe("(update) 취소 사유 제목 목록(전체 교체)"),
+    refund: z.array(z.object({ title: z.string(), price: z.number().int().min(0).optional() })).optional().describe("(update) 반품 사유 {제목,배송비} 목록"),
+    exchange: z.array(z.object({ title: z.string(), price: z.number().int().min(0).optional() })).optional().describe("(update) 교환 사유 {제목,배송비} 목록"),
   }
 );
 
@@ -834,6 +811,21 @@ server.tool(
 // 스키마로 강제하지 않고 느슨한 객체로 받는다. 정확한 필드는 guide(llms.txt)/openapi 의 상품 스키마 참고.
 const looseObj = () => z.record(z.any());
 
+// 멀티플렉스 CRUD 도구 — 한 도구에서 action 으로 분기해 등록 도구 수를 줄인다(클라이언트 도구 상한 대응).
+// actions: { [action]: (rest) => Promise }. rest 는 action 을 제외한 입력값. 각 핸들러가 필요한 필드만 골라 쓴다.
+function crudTool(name, description, actions, shape) {
+  server.tool(
+    name,
+    description,
+    { action: z.enum(Object.keys(actions)).describe("수행할 작업"), ...shape },
+    async ({ action, ...rest }) => {
+      const fn = actions[action];
+      if (!fn) return fail(`지원하지 않는 action 입니다: ${action}`);
+      try { return ok(await fn(rest)); } catch (e) { return fail(e.message); }
+    }
+  );
+}
+
 server.tool(
   "create_product",
   "상품을 등록한다(운영자). 본문은 섹션 객체로 구성한다: " +
@@ -841,11 +833,23 @@ server.tool(
     "product(주문옵션 행 배열 — 옵션 조합별 price/quantity/code 등; 단일상품도 1행), " +
     "delivery(배송), request(요청사항), content(상세내용 — file_photo=대표이미지 id 등), benefit(혜택). " +
     "이미지는 먼저 upload_product_images 로 올려 받은 id 를 content.file_photo 등에 넣는다. " +
+    "★배송비를 받으려면 delivery 객체를 반드시 함께 보낸다(생략하면 배송비 미설정). " +
+    "delivery.parcel_type 이 마스터 스위치다: 10/11/12=무료(이때 배송비는 강제로 0), 21/22=조건부무료, " +
+    "31=유료(선불) · 32=유료(착불) · 33=고객선택. **유료 배송비는 parcel_type=31(또는 32) + parcel_basic_price 를 함께** 넣어야 적용된다. " +
     "정확한 필드 스펙은 guide(prosell://guide/llms.txt)·openapi 의 상품 스키마를 참고하라.",
   {
     origin: looseObj().describe("기본정보 — title(필수), option_type(필수), category/onoff 등"),
     product: z.array(looseObj()).optional().describe("주문옵션 행 목록(옵션 조합별 가격/재고/코드). 단일상품도 최소 1행"),
-    delivery: looseObj().optional().describe("배송정보"),
+    delivery: looseObj().optional().describe(
+      "배송정보(중첩객체). 주요 필드: delivery_use(0=배송안함/1=배송/2=해외직배송), " +
+        "parcel_type(★배송비 스위치: 10·11·12=무료→배송비0, 21·22=조건부무료, 31=유료선불, 32=유료착불, 33=고객선택), " +
+        "parcel_basic_price(기본 배송비 원 — parcel_type이 무료면 무시됨), " +
+        "parcel_free_price(조건부무료 기준금액 — parcel_type 21/22), " +
+        "parcel_area1_price(제주 할증)/parcel_area2_price(도서산간 할증), parcel_id(택배사 id — list_couriers), bundle(묶음배송 0/1/2), " +
+        "extra_charge(추가배송비 0=없음/1=무게/2=2구간/3=3구간/9=수량, 구간·수량별은 parcel_type=31만), " +
+        "range2_from/range2_price/range3_from/range3_price/repeat_quantity. " +
+        "예) 유료배송비 3000원: { delivery_use:1, parcel_type:31, parcel_basic_price:3000 }"
+    ),
     request: looseObj().optional().describe("요청사항"),
     content: looseObj().optional().describe("상세내용 — file_photo(대표이미지 id), 상세설명 등"),
     benefit: looseObj().optional().describe("혜택정보"),
@@ -858,12 +862,17 @@ server.tool(
 server.tool(
   "update_product",
   "상품을 수정한다(운영자). id 와 바꿀 섹션만 보낸다(create_product 와 같은 섹션 구조). " +
-    "origin.option_type 는 함께 보내는 것이 안전하다. 옵션 행 변경은 product 배열로.",
+    "origin.option_type 는 함께 보내는 것이 안전하다. 옵션 행 변경은 product 배열로. " +
+    "★배송비 설정/수정 시 delivery.parcel_type(31=유료선불 등) + parcel_basic_price 를 함께 보낸다(parcel_type이 무료(1x)면 배송비는 0으로 강제).",
   {
     id: z.union([z.number().int(), z.string()]).describe("상품 id"),
     origin: looseObj().optional(),
     product: z.array(looseObj()).optional(),
-    delivery: looseObj().optional(),
+    delivery: looseObj().optional().describe(
+      "배송정보(중첩객체). delivery_use(0/1/2), parcel_type(10·11·12=무료→배송비0, 21·22=조건부무료, 31=유료선불, 32=유료착불, 33=고객선택), " +
+        "parcel_basic_price(기본 배송비), parcel_free_price(조건부무료 기준), parcel_area1_price/parcel_area2_price(제주/도서산간 할증), " +
+        "parcel_id(택배사 id), bundle, extra_charge. 예) 배송비 3000원: { delivery_use:1, parcel_type:31, parcel_basic_price:3000 }"
+    ),
     request: looseObj().optional(),
     content: looseObj().optional(),
     benefit: looseObj().optional(),
@@ -913,122 +922,61 @@ const listParams = {
   title: z.string().optional().describe("이름 부분검색"),
 };
 
-server.tool(
-  "list_categories",
-  "상품 카테고리 목록을 조회한다. 응답 items[].origin.code 가 상품의 category 값으로 쓰인다.",
-  { ...listParams, code: z.string().optional().describe("카테고리 코드로 필터"), order: z.number().int().min(0).max(2).optional().describe("0=등록역순 1=위치순 2=위치역순") },
-  async (params) => { try { return ok(await listCategories(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_category",
-  "상품 카테고리를 등록한다(운영자). origin.num(1~4 깊이)·origin.title 필수. " +
-    "design 섹션으로 스킨/정렬 등 설정 가능(선택).",
+crudTool(
+  "categories",
+  "상품 카테고리 관리(운영자). action: list|create|update|delete. " +
+    "list 응답 items[].origin.code 가 상품 origin.category 값으로 쓰인다. " +
+    "create/update 는 origin(num 1~4 깊이·title 필수)·design(스킨/정렬) 섹션. update/delete 는 id 필수.",
   {
-    origin: looseObj().describe("기본정보 — num(1~4 필수), title(필수), onoff/position/parent_id/title_s 등"),
-    design: looseObj().optional().describe("디자인 — pc/m 스킨·정렬·필터 노출 등"),
+    list: ({ page, limit, id, title, code, order }) => listCategories({ page, limit, id, title, code, order }),
+    create: ({ origin, design }) => createCategory({ origin, design }),
+    update: ({ id, origin, design }) => updateCategory(id, { origin, design }),
+    delete: ({ id }) => deleteCategory(id),
   },
-  async (body) => { try { return ok(await createCategory(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_category",
-  "상품 카테고리를 수정한다(운영자). id 와 바꿀 섹션(origin/design)만 보낸다. num/parent_id 는 변경 불가.",
   {
-    id: z.union([z.number().int(), z.string()]).describe("카테고리 id"),
-    origin: looseObj().optional().describe("title/title_s/onoff/position/allitem 등"),
-    design: looseObj().optional(),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateCategory(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_category",
-  "상품 카테고리를 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 카테고리 id") },
-  async ({ id }) => { try { return ok(await deleteCategory(id)); } catch (e) { return fail(e.message); } }
+    ...listParams,
+    code: z.string().optional().describe("(list) 카테고리 코드 필터"),
+    order: z.number().int().min(0).max(2).optional().describe("(list) 0=등록역순 1=위치순 2=위치역순"),
+    origin: looseObj().optional().describe("(create/update) num(1~4)·title·onoff/position/parent_id 등"),
+    design: looseObj().optional().describe("(create/update) pc/m 스킨·정렬·필터 노출 등"),
+  }
 );
 
 // ── 공급자 ──────────────────────────────────────────────────────────────────
-server.tool(
-  "list_suppliers",
-  "공급자(매입처) 목록을 조회한다. id 는 상품 origin.supplier 값으로 쓰인다(기본 1).",
-  listParams,
-  async (params) => { try { return ok(await listSuppliers(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_supplier",
-  "공급자를 등록한다(운영자). 필수: title, uid, email, tel, warehouse_zipcode, warehouse_addr1, " +
-    "return_zipcode, return_addr1. 그 외 배송/반품/해외 설정은 선택.",
-  { body: looseObj().describe("공급자 정보 — 필수 필드(title/uid/email/tel/warehouse_zipcode/warehouse_addr1/return_zipcode/return_addr1) 포함") },
-  async ({ body }) => { try { return ok(await createSupplier(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_supplier",
-  "공급자 정보를 수정한다(운영자). id 와 바꿀 필드만 보낸다.",
-  { id: z.union([z.number().int(), z.string()]).describe("공급자 id"), body: looseObj().describe("바꿀 필드") },
-  async ({ id, body }) => { try { return ok(await updateSupplier(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_supplier",
-  "공급자를 삭제한다(운영자). 기본 공급자(id=1)는 삭제 불가.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 공급자 id") },
-  async ({ id }) => { try { return ok(await deleteSupplier(id)); } catch (e) { return fail(e.message); } }
+crudTool(
+  "suppliers",
+  "공급자(매입처) 관리(운영자). action: list|create|update|delete. list id 는 상품 origin.supplier 값(기본 1). " +
+    "create 필수: body.{title,uid,email,tel,warehouse_zipcode,warehouse_addr1,return_zipcode,return_addr1}. " +
+    "update/delete 는 id 필수(기본 공급자 id=1 삭제 불가).",
+  {
+    list: ({ page, limit, id, title }) => listSuppliers({ page, limit, id, title }),
+    create: ({ body }) => createSupplier(body),
+    update: ({ id, body }) => updateSupplier(id, body),
+    delete: ({ id }) => deleteSupplier(id),
+  },
+  { ...listParams, body: looseObj().optional().describe("(create/update) 공급자 정보") }
 );
 
 // ── 브랜드 (+이미지) ─────────────────────────────────────────────────────────
-server.tool(
-  "list_brands",
-  "브랜드 목록을 조회한다. id 는 상품 product[].brand 값으로 쓰인다. expand=images 로 이미지 포함.",
-  { ...listParams, expand: z.string().optional().describe("images 지정 시 브랜드 이미지 포함") },
-  async (params) => { try { return ok(await listBrands(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_brand",
-  "브랜드를 등록한다(운영자). title 필수(중복 불가). 로고가 있으면 먼저 upload_brand_image 로 올려 " +
-    "받은 id 를 image 에 넣는다.",
+crudTool(
+  "brands",
+  "브랜드 관리(운영자). action: list|create|update|delete|upload_image|delete_image. " +
+    "list id 는 상품 product[].brand 값(expand=images 로 이미지 포함). create 는 title 필수(중복 불가). " +
+    "로고는 upload_image(file 1개)로 올려 받은 id 를 create/update 의 image 로 넣는다. 기본 브랜드(id<2) 수정/삭제 불가.",
   {
-    title: z.string().describe("브랜드명(필수, 중복 불가)"),
-    image: z.number().int().optional().describe("브랜드 이미지 id(upload_brand_image 결과)"),
+    list: ({ page, limit, id, title, expand }) => listBrands({ page, limit, id, title, expand }),
+    create: ({ title, image }) => createBrand({ title, image }),
+    update: ({ id, title, image }) => updateBrand(id, { title, image }),
+    delete: ({ id }) => deleteBrand(id),
+    upload_image: ({ file }) => uploadBrandImage(file),
+    delete_image: ({ id }) => deleteBrandImage(id),
   },
-  async (body) => { try { return ok(await createBrand(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_brand",
-  "브랜드를 수정한다(운영자). id 와 바꿀 필드(title/image)만. 기본 브랜드(id<2)는 수정 불가.",
   {
-    id: z.union([z.number().int(), z.string()]).describe("브랜드 id"),
-    title: z.string().optional(),
-    image: z.number().int().optional().describe("브랜드 이미지 id"),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateBrand(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_brand",
-  "브랜드를 삭제한다(운영자). 기본 브랜드(id<2)는 삭제 불가.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 브랜드 id") },
-  async ({ id }) => { try { return ok(await deleteBrand(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "upload_brand_image",
-  "브랜드 로고 이미지를 업로드한다(운영자). 로컬 파일 1개(JPEG/GIF/PNG). " +
-    "응답 items[0].id 를 create_brand/update_brand 의 image 로 넣는다.",
-  { file: z.string().describe("업로드할 로컬 이미지 파일 경로") },
-  async ({ file }) => { try { return ok(await uploadBrandImage(file)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_brand_image",
-  "브랜드 이미지를 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 브랜드 이미지 id") },
-  async ({ id }) => { try { return ok(await deleteBrandImage(id)); } catch (e) { return fail(e.message); } }
+    ...listParams,
+    expand: z.string().optional().describe("(list) images 지정 시 이미지 포함"),
+    image: z.number().int().optional().describe("(create/update) 브랜드 이미지 id"),
+    file: z.string().optional().describe("(upload_image) 로컬 이미지 파일 경로"),
+  }
 );
 
 // ── 추가주문옵션 ────────────────────────────────────────────────────────────
@@ -1037,206 +985,105 @@ const addoptionItems = z.array(z.object({
   price: z.number().int().min(0).optional().describe("추가금액"),
 })).optional();
 
-server.tool(
-  "list_addoptions",
-  "추가주문옵션(상품에 덧붙이는 선택형 옵션) 목록을 조회한다. id 는 상품 origin.addoption 값으로 쓰인다.",
-  listParams,
-  async (params) => { try { return ok(await listAddoptions(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_addoption",
-  "추가주문옵션을 등록한다(운영자). title 필수. options 로 옵션값(name/price) 목록을 넣는다.",
+crudTool(
+  "addoptions",
+  "추가주문옵션(상품에 덧붙이는 선택형 옵션) 관리(운영자). action: list|create|update|delete. " +
+    "list id 는 상품 origin.addoption 값. create 는 title 필수, options 로 옵션값([{name,price}]) 목록. " +
+    "update 에 options 를 보내면 옵션값 전체 교체. update/delete 는 id 필수.",
   {
-    title: z.string().describe("추가옵션 제목(필수, 최대 50자)"),
-    req_type: z.number().int().min(0).max(1).optional().describe("0=선택 1=필수"),
-    options: addoptionItems.describe("옵션값 목록 [{name, price}]"),
+    list: ({ page, limit, id, title }) => listAddoptions({ page, limit, id, title }),
+    create: ({ title, req_type, options }) => createAddoption({ title, req_type, options }),
+    update: ({ id, title, req_type, options }) => updateAddoption(id, { title, req_type, options }),
+    delete: ({ id }) => deleteAddoption(id),
   },
-  async (body) => { try { return ok(await createAddoption(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_addoption",
-  "추가주문옵션을 수정한다(운영자). id 와 바꿀 필드만. options 를 보내면 옵션값 전체 교체.",
   {
-    id: z.union([z.number().int(), z.string()]).describe("추가옵션 id"),
-    title: z.string().optional(),
-    req_type: z.number().int().min(0).max(1).optional(),
-    options: addoptionItems,
-  },
-  async ({ id, ...body }) => { try { return ok(await updateAddoption(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_addoption",
-  "추가주문옵션을 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 추가옵션 id") },
-  async ({ id }) => { try { return ok(await deleteAddoption(id)); } catch (e) { return fail(e.message); } }
+    ...listParams,
+    req_type: z.number().int().min(0).max(1).optional().describe("(create/update) 0=선택 1=필수"),
+    options: addoptionItems.describe("(create/update) 옵션값 목록 [{name, price}]"),
+  }
 );
 
 // ── 필터 색상 ───────────────────────────────────────────────────────────────
-server.tool(
-  "list_colors",
-  "필터(검색) 색상 목록을 조회한다. id 는 상품 product[].standard_color 값으로 쓰인다.",
-  listParams,
-  async (params) => { try { return ok(await listColors(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_colors",
-  "필터 색상을 등록한다(운영자). 여러 개를 한 번에 등록. 각 항목은 {title, color(6자리 hex, # 제외)}.",
+crudTool(
+  "colors",
+  "필터(검색) 색상 관리(운영자). action: list|create|update|delete. list id 는 상품 product[].standard_color 값. " +
+    "create 는 items([{title, color}]) 로 여러 개 동시 등록(color=hex 6자리, # 제외). update/delete 는 id 필수.",
   {
+    list: ({ page, limit, id, title }) => listColors({ page, limit, id, title }),
+    create: ({ items }) => createColors(items),
+    update: ({ id, title, color }) => updateColor(id, { title, color }),
+    delete: ({ id }) => deleteColor(id),
+  },
+  {
+    ...listParams,
+    color: z.string().regex(/^[0-9a-fA-F]{6}$/).optional().describe("(update) hex 6자리(# 없이)"),
     items: z.array(z.object({
       title: z.string().describe("색상명(최대 50자)"),
-      color: z.string().regex(/^[0-9a-fA-F]{6}$/).describe("색상 hex 6자리(# 없이, 예: ff0000)"),
-    })).min(1).describe("등록할 색상 목록"),
-  },
-  async ({ items }) => { try { return ok(await createColors(items)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_color",
-  "필터 색상을 수정한다(운영자). id 와 바꿀 필드(title/color)만.",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("색상 id"),
-    title: z.string().optional(),
-    color: z.string().regex(/^[0-9a-fA-F]{6}$/).optional().describe("hex 6자리(# 없이)"),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateColor(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_color",
-  "필터 색상을 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 색상 id") },
-  async ({ id }) => { try { return ok(await deleteColor(id)); } catch (e) { return fail(e.message); } }
+      color: z.string().regex(/^[0-9a-fA-F]{6}$/).describe("hex 6자리(# 없이, 예: ff0000)"),
+    })).optional().describe("(create) 등록할 색상 목록"),
+  }
 );
 
 // ── 필터 사이즈 ─────────────────────────────────────────────────────────────
-server.tool(
-  "list_sizes",
-  "필터(검색) 사이즈 목록을 조회한다. id 는 상품 product[].standard_size 값으로 쓰인다. ct(그룹) 필터 가능.",
-  { ...listParams, ct: z.number().int().optional().describe("사이즈 그룹(카테고리) id 로 필터") },
-  async (params) => { try { return ok(await listSizes(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_sizes",
-  "필터 사이즈를 등록한다(운영자). 두 방식 중 하나: " +
-    "(A) 새 그룹 — ct(새 그룹명) + items(사이즈명 배열), " +
-    "(B) 기존 그룹에 추가 — group(기존 그룹 id) + items(사이즈명 배열).",
+crudTool(
+  "sizes",
+  "필터(검색) 사이즈 관리(운영자). action: list|create|update|delete. list id 는 상품 product[].standard_size 값(ct=그룹 필터). " +
+    "create 두 방식: (A) 새 그룹 ct(그룹명)+items, (B) 기존 그룹 group(id)+items. " +
+    "update 는 id+title(그룹 변경 불가). delete 시 그룹 마지막 사이즈면 그룹도 삭제.",
   {
-    ct: z.string().optional().describe("(방식 A) 새 사이즈 그룹명"),
-    group: z.number().int().optional().describe("(방식 B) 기존 그룹 id"),
-    items: z.array(z.string()).min(1).describe("사이즈명 목록(각 최대 50자)"),
+    list: ({ page, limit, id, title, ct }) => listSizes({ page, limit, id, title, ct }),
+    create: ({ ct, group, items }) => createSizes({ ct, group, items }),
+    update: ({ id, title }) => updateSize(id, { title }),
+    delete: ({ id }) => deleteSize(id),
   },
-  async (body) => { try { return ok(await createSizes(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_size",
-  "필터 사이즈명을 수정한다(운영자). id 와 title 만(그룹 변경 불가).",
   {
-    id: z.union([z.number().int(), z.string()]).describe("사이즈 id"),
-    title: z.string().describe("바꿀 사이즈명(최대 50자)"),
-  },
-  async ({ id, title }) => { try { return ok(await updateSize(id, { title })); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_size",
-  "필터 사이즈를 삭제한다(운영자). 그룹의 마지막 사이즈를 지우면 그룹도 함께 삭제된다.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 사이즈 id") },
-  async ({ id }) => { try { return ok(await deleteSize(id)); } catch (e) { return fail(e.message); } }
+    ...listParams,
+    ct: z.union([z.number().int(), z.string()]).optional().describe("(list) 그룹 id 필터 / (create A) 새 그룹명"),
+    group: z.number().int().optional().describe("(create B) 기존 그룹 id"),
+    items: z.array(z.string()).optional().describe("(create) 사이즈명 목록(각 최대 50자)"),
+  }
 );
 
 // ── 아이콘 ──────────────────────────────────────────────────────────────────
-server.tool(
-  "list_icons",
-  "상품 아이콘(NEW/BEST 등 라벨) 목록을 조회한다. id 는 상품 content.icon 값으로 쓰인다. ct(1~4) 필터 가능.",
-  { ...listParams, ct: z.number().int().min(1).max(4).optional().describe("아이콘 분류(1~4)") },
-  async (params) => { try { return ok(await listIcons(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_icon",
-  "아이콘을 등록한다(운영자). ct(1~4)·title 필수, 이미지 파일 필수(JPEG/GIF/PNG). " +
-    "title 은 최대 8자.",
+crudTool(
+  "icons",
+  "상품 아이콘(NEW/BEST 등 라벨) 관리(운영자). action: list|create|update|delete. list id 는 상품 content.icon 값(ct 1~4 필터). " +
+    "create 는 ct(1~4)·title(≤8자)·file(이미지 필수). update 는 id+바꿀 필드(이미지 교체 시 file). 사용 중이면 삭제 불가.",
   {
-    ct: z.number().int().min(1).max(4).describe("아이콘 분류(1~4)"),
-    title: z.string().describe("아이콘명(최대 8자)"),
-    onoff: z.number().int().min(0).max(1).optional().describe("1=사용 0=미사용"),
-    file: z.string().describe("아이콘 이미지 로컬 파일 경로(필수)"),
+    list: ({ page, limit, id, title, ct }) => listIcons({ page, limit, id, title, ct }),
+    create: ({ ct, title, onoff, file }) => createIcon({ ct, title, onoff }, file),
+    update: ({ id, ct, title, onoff, file }) => updateIcon(id, { ct, title, onoff }, file),
+    delete: ({ id }) => deleteIcon(id),
   },
-  async ({ file, ...fields }) => { try { return ok(await createIcon(fields, file)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_icon",
-  "아이콘을 수정한다(운영자). id 와 바꿀 필드(ct/title/onoff). 이미지를 바꾸려면 file 경로를 함께 보낸다(선택).",
   {
-    id: z.union([z.number().int(), z.string()]).describe("아이콘 id"),
-    ct: z.number().int().min(1).max(4).optional(),
-    title: z.string().optional().describe("최대 8자"),
-    onoff: z.number().int().min(0).max(1).optional(),
-    file: z.string().optional().describe("교체할 이미지 로컬 파일 경로(선택)"),
-  },
-  async ({ id, file, ...fields }) => { try { return ok(await updateIcon(id, fields, file)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_icon",
-  "아이콘을 삭제한다(운영자). 상품/회원등급/게시판에서 사용 중이면 삭제 불가.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 아이콘 id") },
-  async ({ id }) => { try { return ok(await deleteIcon(id)); } catch (e) { return fail(e.message); } }
+    ...listParams,
+    ct: z.number().int().min(1).max(4).optional().describe("아이콘 분류(1~4)"),
+    onoff: z.number().int().min(0).max(1).optional().describe("(create/update) 1=사용 0=미사용"),
+    file: z.string().optional().describe("(create 필수/update 선택) 아이콘 이미지 로컬 파일 경로"),
+  }
 );
 
 // ── 공통 템플릿(상세내용 서식) ────────────────────────────────────────────────
-server.tool(
-  "list_templates",
-  "공통 템플릿(상세페이지 배송/교환·반품/AS 등 공통 영역 서식) 목록을 조회한다. " +
-    "id 는 상품 content 의 delivery_template/return_template/as_template 등에 쓰인다.",
-  listParams,
-  async (params) => { try { return ok(await listTemplates(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_template",
-  "공통 템플릿을 등록한다(운영자). device(1=PC 2=모바일)·ct(영역: 202/203/204/206/1)·" +
-    "pc_mode·m_mode(1/2)·title·pc_content·m_content.",
+crudTool(
+  "templates",
+  "공통 템플릿(상세페이지 배송/교환·반품/AS 등 공통 영역 서식) 관리(운영자). action: list|create|update|delete. " +
+    "id 는 상품 content 의 delivery_template/return_template/as_template 등에 쓰인다. " +
+    "create 는 device(1=PC/2=모바일)·ct(202/203/204/206/1)·pc_mode·m_mode(1/2)·title·pc_content·m_content. update/delete 는 id 필수.",
   {
-    device: z.number().int().describe("1=PC 2=모바일"),
-    ct: z.number().int().describe("영역 코드(202/203/204/206/1)"),
-    pc_mode: z.number().int().describe("PC 모드(1/2)"),
-    m_mode: z.number().int().describe("모바일 모드(1/2)"),
-    title: z.string().describe("템플릿명(최대 100자)"),
-    pc_content: z.string().describe("PC 내용(HTML)"),
-    m_content: z.string().describe("모바일 내용(HTML)"),
+    list: ({ page, limit, id, title }) => listTemplates({ page, limit, id, title }),
+    create: ({ device, ct, pc_mode, m_mode, title, pc_content, m_content }) => createTemplate({ device, ct, pc_mode, m_mode, title, pc_content, m_content }),
+    update: ({ id, device, ct, pc_mode, m_mode, title, pc_content, m_content }) => updateTemplate(id, { device, ct, pc_mode, m_mode, title, pc_content, m_content }),
+    delete: ({ id }) => deleteTemplate(id),
   },
-  async (body) => { try { return ok(await createTemplate(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_template",
-  "공통 템플릿을 수정한다(운영자). id 와 바꿀 필드만.",
   {
-    id: z.union([z.number().int(), z.string()]).describe("템플릿 id"),
-    device: z.number().int().optional(),
-    ct: z.number().int().optional(),
-    pc_mode: z.number().int().optional(),
-    m_mode: z.number().int().optional(),
-    title: z.string().optional(),
-    pc_content: z.string().optional(),
-    m_content: z.string().optional(),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateTemplate(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_template",
-  "공통 템플릿을 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 템플릿 id") },
-  async ({ id }) => { try { return ok(await deleteTemplate(id)); } catch (e) { return fail(e.message); } }
+    ...listParams,
+    device: z.number().int().optional().describe("(create/update) 1=PC 2=모바일"),
+    ct: z.number().int().optional().describe("(create/update) 영역 코드(202/203/204/206/1)"),
+    pc_mode: z.number().int().optional().describe("(create/update) PC 모드(1/2)"),
+    m_mode: z.number().int().optional().describe("(create/update) 모바일 모드(1/2)"),
+    pc_content: z.string().optional().describe("(create/update) PC 내용(HTML)"),
+    m_content: z.string().optional().describe("(create/update) 모바일 내용(HTML)"),
+  }
 );
 
 // ── 서식(상품정보제공고시) — 조회 전용 ───────────────────────────────────────
@@ -1249,380 +1096,194 @@ server.tool(
 );
 
 // ── 상품문의 (운영자) ────────────────────────────────────────────────────────
-// 운영자(admin) 토큰은 전체 문의를 조회하고, update 로 답변(reply_content)을 등록한다.
-server.tool(
-  "list_product_inquiries",
-  "상품문의 목록을 조회한다(운영자). 답변 대기/완료를 함께 본다. 각 항목: id(문의번호)·product_id(상품)·" +
-    "title·content·secret(비밀글)·reply_content(답변)·reply_dt(답변일). 답변이 비어 있으면 미답변.",
+// 운영자(admin) 토큰은 전체 문의를 조회하고, answer 로 답변(reply_content)을 등록한다.
+crudTool(
+  "product_inquiries",
+  "상품문의 관리(운영자). action: list|answer|create|delete. " +
+    "list 는 답변대기/완료 함께(각 항목 id·product_id·title·content·secret·reply_content; reply_content 비면 미답변). " +
+    "answer 는 id+reply_content(로그인 운영자가 답변자로 자동 등록); 원문(title/content/secret) 수정도 가능. " +
+    "create 는 product_id·title·content 필수(운영자 대리등록). delete 는 id 필수.",
   {
-    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
-    id: z.string().optional().describe("문의번호(id) 단건/콤마 복수"),
-    title: z.string().optional().describe("제목 부분검색"),
-    mid: z.number().int().optional().describe("작성 회원번호로 필터"),
+    list: ({ period_start, period_end, id, title, mid, page, limit }) =>
+      listProductInquiries({ period_start, period_end, id, title, mid, page, limit }),
+    answer: async ({ id, reply_content, reply_mid, title, content, secret }) => {
+      const body = {};
+      if (reply_content !== undefined) { body.reply_mid = reply_mid ?? (await operatorMid()); body.reply_content = reply_content; }
+      else if (reply_mid !== undefined) body.reply_mid = reply_mid;
+      if (title !== undefined) body.title = title;
+      if (content !== undefined) body.content = content;
+      if (secret !== undefined) body.secret = secret;
+      return updateProductInquiry(id, body);
+    },
+    create: ({ product_id, title, content, secret }) => createProductInquiry({ product_id, title, content, secret }),
+    delete: ({ id }) => deleteProductInquiry(id),
+  },
+  {
+    period_start: z.string().optional().describe("(list) 시작일 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 종료일 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("문의번호 — list 필터(콤마 복수) / answer·delete 대상"),
+    title: z.string().optional().describe("list 제목검색 / create·answer 제목"),
+    mid: z.number().int().optional().describe("(list) 작성 회원번호 필터"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listProductInquiries(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "answer_product_inquiry",
-  "상품문의에 답변을 등록/수정한다(운영자). 문의번호(id)와 답변 내용(reply_content)을 보내면 " +
-    "로그인한 운영자를 답변자로 자동 등록한다. 문의 원문(title/content/secret) 수정도 가능(보통 불필요).",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("상품문의 번호(list_product_inquiries 의 id)"),
-    reply_content: z.string().optional().describe("답변 내용(작성 시 운영자를 답변자로 자동 등록)"),
-    reply_mid: z.number().int().optional().describe("답변자 회원번호 — 생략 시 로그인 운영자 본인(관리자 등급이어야 함)"),
-    title: z.string().optional().describe("문의 제목 수정"),
-    content: z.string().optional().describe("문의 본문 수정"),
-    secret: z.number().int().min(0).max(1).optional().describe("비밀글 여부 0/1"),
-  },
-  async ({ id, reply_content, reply_mid, ...rest }) => {
-    try {
-      const body = {};
-      if (reply_content !== undefined) {
-        body.reply_mid = reply_mid ?? (await operatorMid());
-        body.reply_content = reply_content;
-      } else if (reply_mid !== undefined) {
-        body.reply_mid = reply_mid;
-      }
-      for (const [k, v] of Object.entries(rest)) if (v !== undefined) body[k] = v;
-      return ok(await updateProductInquiry(id, body));
-    } catch (e) { return fail(e.message); }
-  }
-);
-
-server.tool(
-  "create_product_inquiry",
-  "상품문의를 등록한다(운영자 작성). 회원으로 등록되며 product_id·title·content 필수. " +
-    "(고객 셀프 문의는 스토어프론트에서 처리; 이 도구는 운영자 대리등록용)",
-  {
-    product_id: z.union([z.number().int(), z.string()]).describe("상품 id"),
-    title: z.string().describe("제목"),
-    content: z.string().describe("내용"),
+    product_id: z.union([z.number().int(), z.string()]).optional().describe("(create) 상품 id"),
+    content: z.string().optional().describe("create 내용 / answer 원문 수정"),
     secret: z.number().int().min(0).max(1).optional().describe("비밀글 0/1"),
-  },
-  async (body) => { try { return ok(await createProductInquiry(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_product_inquiry",
-  "상품문의를 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 상품문의 번호") },
-  async ({ id }) => { try { return ok(await deleteProductInquiry(id)); } catch (e) { return fail(e.message); } }
+    reply_content: z.string().optional().describe("(answer) 답변 내용"),
+    reply_mid: z.number().int().optional().describe("(answer) 답변자 회원번호 — 생략 시 로그인 운영자"),
+  }
 );
 
 // ── 고객문의 (운영자) ────────────────────────────────────────────────────────
-server.tool(
-  "list_customer_inquiries",
-  "고객문의(1:1 문의) 목록을 조회한다(운영자). 각 항목: id·category(분류)·title·content·" +
-    "reply_content(답변)·files(첨부). 답변이 비어 있으면 미답변.",
+crudTool(
+  "customer_inquiries",
+  "고객문의(1:1 문의) 관리(운영자). action: list|answer|create|delete|setup|upload. " +
+    "list 각 항목 id·category·title·content·reply_content·files(reply_content 비면 미답변). " +
+    "answer 는 id+reply_content(운영자 자동 답변자); 원문(category/title/content/editor/files) 수정 가능. " +
+    "create 는 item_type(0~4)·category·title·content 필수(회원 대리등록). setup 은 분류·첨부 제한 조회. " +
+    "upload 는 로컬파일(files, 최대 3) 올려 items[].id 를 create/answer 의 files 로.",
   {
-    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
-    id: z.string().optional().describe("문의번호(id) 단건/콤마 복수"),
-    title: z.string().optional().describe("제목 부분검색"),
-    mid: z.number().int().optional().describe("작성 회원번호로 필터"),
+    list: ({ period_start, period_end, id, title, mid, page, limit }) =>
+      listCustomerInquiries({ period_start, period_end, id, title, mid, page, limit }),
+    answer: async ({ id, reply_content, reply_mid, category, title, content, editor, files }) => {
+      const body = {};
+      if (reply_content !== undefined) { body.reply_mid = reply_mid ?? (await operatorMid()); body.reply_content = reply_content; }
+      else if (reply_mid !== undefined) body.reply_mid = reply_mid;
+      if (category !== undefined) body.category = category;
+      if (title !== undefined) body.title = title;
+      if (content !== undefined) body.content = content;
+      if (editor !== undefined) body.editor = editor;
+      if (files !== undefined) body.files = files;
+      return updateCustomerInquiry(id, body);
+    },
+    create: ({ item_type, category, title, content, item_ids, editor, files }) =>
+      createCustomerInquiry({ item_type, category, title, content, item_ids, editor, files }),
+    delete: ({ id }) => deleteCustomerInquiry(id),
+    setup: () => getCustomerInquirySetup(),
+    upload: ({ files }) => uploadCustomerInquiryFiles(files),
+  },
+  {
+    period_start: z.string().optional().describe("(list) 시작일 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 종료일 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("문의번호 — list 필터 / answer·delete 대상"),
+    title: z.string().optional().describe("list 제목검색 / create·answer 제목"),
+    mid: z.number().int().optional().describe("(list) 작성 회원번호 필터"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listCustomerInquiries(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "answer_customer_inquiry",
-  "고객문의에 답변을 등록/수정한다(운영자). 문의번호(id)와 답변 내용(reply_content)을 보내면 " +
-    "로그인한 운영자를 답변자로 자동 등록한다. 문의 원문(category/title/content/editor/files) 수정도 가능.",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("고객문의 번호(list_customer_inquiries 의 id)"),
-    reply_content: z.string().optional().describe("답변 내용(작성 시 운영자를 답변자로 자동 등록)"),
-    reply_mid: z.number().int().optional().describe("답변자 회원번호 — 생략 시 로그인 운영자 본인"),
-    category: z.string().optional().describe("문의 분류 수정"),
-    title: z.string().optional(),
-    content: z.string().optional(),
-    editor: z.number().int().min(0).max(1).optional().describe("0=텍스트 1=HTML"),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(upload_customer_inquiry_files 결과)"),
-  },
-  async ({ id, reply_content, reply_mid, ...rest }) => {
-    try {
-      const body = {};
-      if (reply_content !== undefined) {
-        body.reply_mid = reply_mid ?? (await operatorMid());
-        body.reply_content = reply_content;
-      } else if (reply_mid !== undefined) {
-        body.reply_mid = reply_mid;
-      }
-      for (const [k, v] of Object.entries(rest)) if (v !== undefined) body[k] = v;
-      return ok(await updateCustomerInquiry(id, body));
-    } catch (e) { return fail(e.message); }
+    item_type: z.number().int().min(0).max(4).optional().describe("(create) 0=일반 1=주문상품 2=장바구니 3=보관 4=최근"),
+    category: z.string().optional().describe("create/answer 분류"),
+    content: z.string().optional().describe("create/answer 내용"),
+    item_ids: z.string().optional().describe("(create) 연관 항목 id 콤마구분(item_type 1~4)"),
+    editor: z.number().int().min(0).max(1).optional().describe("create/answer 0=텍스트 1=HTML"),
+    files: z.array(z.union([z.number().int(), z.string()])).optional().describe("create/answer=첨부 file id 목록 / upload=로컬파일 경로(최대 3)"),
+    reply_content: z.string().optional().describe("(answer) 답변 내용"),
+    reply_mid: z.number().int().optional().describe("(answer) 답변자 회원번호 — 생략 시 로그인 운영자"),
   }
-);
-
-server.tool(
-  "create_customer_inquiry",
-  "고객문의를 등록한다(운영자 작성, 회원 전용). item_type(0=일반,1=주문상품,2=장바구니,3=보관,4=최근)·" +
-    "category·title·content 필수. 첨부는 먼저 upload_customer_inquiry_files 로 올려 files 에 id 를 넣는다. " +
-    "분류(category) 선택지는 customer_inquiry_setup 에서 확인.",
-  {
-    item_type: z.number().int().min(0).max(4).describe("0=일반 1=주문상품 2=장바구니 3=보관 4=최근"),
-    category: z.string().describe("문의 분류"),
-    title: z.string().describe("제목"),
-    content: z.string().describe("내용"),
-    item_ids: z.string().optional().describe("연관 항목 id 콤마구분(item_type 1~4)"),
-    editor: z.number().int().min(0).max(1).optional().describe("0=텍스트 1=HTML"),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록"),
-  },
-  async (body) => { try { return ok(await createCustomerInquiry(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_customer_inquiry",
-  "고객문의를 삭제한다(운영자). 첨부파일도 함께 비활성화된다.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 고객문의 번호") },
-  async ({ id }) => { try { return ok(await deleteCustomerInquiry(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "customer_inquiry_setup",
-  "고객문의 설정을 조회한다(운영자). 분류(categories) 목록과 첨부 제한(uploadCount/uploadSize)을 반환. " +
-    "create_customer_inquiry 의 category 는 여기 categories 중에서 고른다.",
-  {},
-  async () => { try { return ok(await getCustomerInquirySetup()); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "upload_customer_inquiry_files",
-  "고객문의 첨부파일을 업로드한다(운영자). 로컬 파일(최대 3). 응답 items[].id 를 " +
-    "create_customer_inquiry/answer_customer_inquiry 의 files 에 넣는다.",
-  { files: z.array(z.string()).min(1).max(3).describe("업로드할 로컬 파일 경로 목록(최대 3)") },
-  async ({ files }) => { try { return ok(await uploadCustomerInquiryFiles(files)); } catch (e) { return fail(e.message); } }
 );
 
 // ── 상품평(리뷰) (운영자) ─────────────────────────────────────────────────────
-server.tool(
-  "list_reviews",
-  "상품평(리뷰) 목록을 조회한다(운영자). 각 항목: id·product_id(상품)·score(별점 1~5)·content·" +
-    "best(베스트)·files(사진)·reply_content(운영자 답변)·reply_dt. 답변이 비어 있으면 미답변. " +
-    "별점·사진여부·상품으로 필터 가능.",
+crudTool(
+  "reviews",
+  "상품평(리뷰) 관리(운영자). action: list|answer|create|delete|setup|upload. " +
+    "list 각 항목 id·product_id·score(1~5)·content·best·files·reply_content(비면 미답변); 별점/사진/상품 필터. " +
+    "answer 는 id+reply_content(운영자 자동 답변자); 원문(content/score/best/files) 수정 가능. " +
+    "create 는 prno·content·score 필수(회원 대리등록). setup 은 적립/기간/감정표현 조회. upload 는 사진(files, 최대 5).",
   {
-    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
-    id: z.string().optional().describe("리뷰번호(id) 단건/콤마 복수"),
-    product_id: z.number().int().optional().describe("상품 id 로 필터"),
-    prno: z.number().int().optional().describe("상품주문번호(prno)로 필터"),
-    mid: z.number().int().optional().describe("작성 회원번호로 필터"),
-    score: z.number().int().min(1).max(5).optional().describe("별점(1~5)으로 필터"),
-    photo: z.number().int().min(0).max(1).optional().describe("1=사진 리뷰만, 0=사진 없는 것"),
-    best: z.number().int().min(0).max(1).optional().describe("1=베스트 리뷰만"),
-    content: z.string().optional().describe("내용 부분검색"),
+    list: ({ period_start, period_end, id, product_id, prno, mid, score, photo, best, content, page, limit }) =>
+      listReviews({ period_start, period_end, id, product_id, prno, mid, score, photo, best, content, page, limit }),
+    answer: async ({ id, reply_content, reply_mid, content, score, best, files }) => {
+      const body = {};
+      if (reply_content !== undefined) { body.reply_mid = reply_mid ?? (await operatorMid()); body.reply_content = reply_content; }
+      else if (reply_mid !== undefined) body.reply_mid = reply_mid;
+      if (content !== undefined) body.content = content;
+      if (score !== undefined) body.score = score;
+      if (best !== undefined) body.best = best;
+      if (files !== undefined) body.files = files;
+      return updateReview(id, body);
+    },
+    create: ({ prno, content, score, files }) => createReview({ prno, content, score, files }),
+    delete: ({ id }) => deleteReview(id),
+    setup: () => getReviewSetup(),
+    upload: ({ files }) => uploadReviewFiles(files),
+  },
+  {
+    period_start: z.string().optional().describe("(list) 시작일 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 종료일 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("리뷰번호 — list 필터 / answer·delete 대상"),
+    product_id: z.number().int().optional().describe("(list) 상품 id 필터"),
+    prno: z.union([z.number().int(), z.string()]).optional().describe("list 필터 / create 상품주문번호"),
+    mid: z.number().int().optional().describe("(list) 작성 회원번호 필터"),
+    score: z.number().int().min(1).max(5).optional().describe("list 필터 / create·answer 별점(1~5)"),
+    photo: z.number().int().min(0).max(1).optional().describe("(list) 1=사진리뷰만"),
+    best: z.number().int().min(0).max(1).optional().describe("list 필터 / answer 베스트 지정"),
+    content: z.string().optional().describe("list 내용검색 / create·answer 내용"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listReviews(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "answer_review",
-  "상품평에 답변(댓글)을 등록/수정한다(운영자). 리뷰번호(id)와 답변 내용(reply_content)을 보내면 " +
-    "로그인한 운영자를 답변자로 자동 등록한다. 리뷰 원문(content/score/files)·베스트 지정(best) 수정도 가능.",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("상품평 번호(list_reviews 의 id)"),
-    reply_content: z.string().optional().describe("답변(댓글) 내용(작성 시 운영자를 답변자로 자동 등록)"),
-    reply_mid: z.number().int().optional().describe("답변자 회원번호 — 생략 시 로그인 운영자 본인"),
-    content: z.string().optional().describe("리뷰 본문 수정"),
-    score: z.number().int().min(1).max(5).optional().describe("별점 수정(1~5)"),
-    best: z.number().int().min(0).max(1).optional().describe("베스트 리뷰 지정 1/0"),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(upload_review_files 결과)"),
-  },
-  async ({ id, reply_content, reply_mid, ...rest }) => {
-    try {
-      const body = {};
-      if (reply_content !== undefined) {
-        body.reply_mid = reply_mid ?? (await operatorMid());
-        body.reply_content = reply_content;
-      } else if (reply_mid !== undefined) {
-        body.reply_mid = reply_mid;
-      }
-      for (const [k, v] of Object.entries(rest)) if (v !== undefined) body[k] = v;
-      return ok(await updateReview(id, body));
-    } catch (e) { return fail(e.message); }
+    files: z.array(z.union([z.number().int(), z.string()])).optional().describe("create/answer=첨부 file id / upload=로컬파일 경로(최대 5)"),
+    reply_content: z.string().optional().describe("(answer) 답변 내용"),
+    reply_mid: z.number().int().optional().describe("(answer) 답변자 회원번호 — 생략 시 로그인 운영자"),
   }
-);
-
-server.tool(
-  "create_review",
-  "상품평을 등록한다(운영자 작성, 회원). 상품주문번호(prno)·content·score(1~5) 필수. " +
-    "첨부는 먼저 upload_review_files 로 올려 files 에 id 를 넣는다. " +
-    "(고객 셀프 리뷰는 스토어프론트에서 처리; 이 도구는 운영자 대리등록용)",
-  {
-    prno: z.union([z.number().int(), z.string()]).describe("상품주문번호(prno) — 구매한 상품주문"),
-    content: z.string().describe("리뷰 내용"),
-    score: z.number().int().min(1).max(5).describe("별점(1~5)"),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(최대 5)"),
-  },
-  async (body) => { try { return ok(await createReview(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_review",
-  "상품평을 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 상품평 번호") },
-  async ({ id }) => { try { return ok(await deleteReview(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "review_setup",
-  "상품평 설정을 조회한다(운영자). 적립 포인트(point_basic/point_photo)·작성가능 기간(review_day)·" +
-    "별점 감정표현(emotion) 등을 반환.",
-  {},
-  async () => { try { return ok(await getReviewSetup()); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "upload_review_files",
-  "상품평 첨부파일(사진)을 업로드한다(운영자). 로컬 파일(최대 5). 응답 items[].id 를 " +
-    "create_review/answer_review 의 files 에 넣는다.",
-  { files: z.array(z.string()).min(1).max(5).describe("업로드할 로컬 파일 경로 목록(최대 5)") },
-  async ({ files }) => { try { return ok(await uploadReviewFiles(files)); } catch (e) { return fail(e.message); } }
 );
 
 // ── 공지사항 (운영자) ────────────────────────────────────────────────────────
-server.tool(
-  "list_notices",
-  "공지사항 목록을 조회한다. 각 항목: id·category(분류)·title·content·dt·views(조회수)·files. " +
-    "응답 fixeds 는 상단고정된 공지 id 목록.",
+crudTool(
+  "notices",
+  "공지사항 관리(운영자). action: list|create|update|delete|setup|upload. " +
+    "list 각 항목 id·category·title·content·dt·views·files(응답 fixeds=상단고정 id). " +
+    "create 는 category·title·content 필수(작성자=로그인 운영자 자동), fixed=1 상단고정. update 는 id+바꿀 필드. " +
+    "setup 은 분류·첨부 제한 조회. upload 는 로컬파일(files, 최대 3)→items[].id 를 create/update 의 files 로.",
   {
-    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
-    id: z.string().optional().describe("공지 id 단건/콤마 복수"),
-    title: z.string().optional().describe("제목 부분검색"),
+    list: ({ period_start, period_end, id, title, page, limit }) =>
+      listNotices({ period_start, period_end, id, title, page, limit }),
+    create: async ({ category, title, content, fixed, files }) =>
+      createNotice({ category, title, content, fixed, files, mid: await operatorMid() }),
+    update: ({ id, category, title, content, fixed, files }) =>
+      updateNotice(id, { category, title, content, fixed, files }),
+    delete: ({ id }) => deleteNotice(id),
+    setup: () => getNoticeSetup(),
+    upload: ({ files }) => uploadNoticeFiles(files),
+  },
+  {
+    period_start: z.string().optional().describe("(list) 시작일 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 종료일 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("공지 id — list 필터 / update·delete 대상"),
+    title: z.string().optional().describe("list 제목검색 / create·update 제목"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listNotices(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_notice",
-  "공지사항을 등록한다(운영자). category·title·content 필수. 작성자는 로그인 운영자로 자동 등록. " +
-    "fixed=1 이면 상단고정. 첨부는 먼저 upload_notice_files 로 올려 files 에 id 를 넣는다. " +
-    "분류(category)는 notice_setup 에서 확인.",
-  {
-    category: z.string().describe("분류(notice_setup 의 categories 중 선택)"),
-    title: z.string().describe("제목"),
-    content: z.string().describe("내용(HTML 가능)"),
-    fixed: z.number().int().min(0).max(1).optional().describe("1=상단고정"),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(최대 3)"),
-  },
-  async ({ ...body }) => {
-    try {
-      body.mid = await operatorMid();
-      return ok(await createNotice(body));
-    } catch (e) { return fail(e.message); }
+    category: z.string().optional().describe("create/update 분류(setup 의 categories 중)"),
+    content: z.string().optional().describe("create/update 내용(HTML 가능)"),
+    fixed: z.number().int().min(0).max(1).optional().describe("create/update 1=상단고정"),
+    files: z.array(z.union([z.number().int(), z.string()])).optional().describe("create/update=첨부 file id / upload=로컬파일 경로(최대 3)"),
   }
-);
-
-server.tool(
-  "update_notice",
-  "공지사항을 수정한다(운영자). id 와 바꿀 필드만(category/title/content/fixed/files).",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("공지 id"),
-    category: z.string().optional(),
-    title: z.string().optional(),
-    content: z.string().optional(),
-    fixed: z.number().int().min(0).max(1).optional().describe("1=상단고정"),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록"),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateNotice(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_notice",
-  "공지사항을 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 공지 id") },
-  async ({ id }) => { try { return ok(await deleteNotice(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "notice_setup",
-  "공지사항 설정을 조회한다(운영자). 분류(categories)·첨부 제한(uploadCount/uploadSize) 반환.",
-  {},
-  async () => { try { return ok(await getNoticeSetup()); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "upload_notice_files",
-  "공지사항 첨부파일을 업로드한다(운영자). 로컬 파일(최대 3). items[].id 를 create_notice/update_notice 의 files 로.",
-  { files: z.array(z.string()).min(1).max(3).describe("업로드할 로컬 파일 경로 목록(최대 3)") },
-  async ({ files }) => { try { return ok(await uploadNoticeFiles(files)); } catch (e) { return fail(e.message); } }
 );
 
 // ── 자주묻는 질문(FAQ) (운영자) ───────────────────────────────────────────────
-server.tool(
-  "list_faqs",
-  "FAQ(자주묻는 질문) 목록을 조회한다. 각 항목: id·category(분류)·title·content·views·files.",
+crudTool(
+  "faqs",
+  "FAQ(자주묻는 질문) 관리(운영자). action: list|create|update|delete|setup|upload. " +
+    "list 각 항목 id·category·title·content·views·files. create 는 category·title·content 필수(작성자=로그인 운영자 자동). " +
+    "update 는 id+바꿀 필드. setup 은 분류·첨부 제한 조회. upload 는 로컬파일(files, 최대 3)→items[].id 를 create/update 의 files 로.",
   {
-    period_start: z.string().optional().describe("검색 시작일 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("검색 종료일 YYYY-MM-DD (기본 오늘)"),
-    id: z.string().optional().describe("FAQ id 단건/콤마 복수"),
-    title: z.string().optional().describe("제목 부분검색"),
+    list: ({ period_start, period_end, id, title, page, limit }) =>
+      listFaqs({ period_start, period_end, id, title, page, limit }),
+    create: async ({ category, title, content, files }) =>
+      createFaq({ category, title, content, files, mid: await operatorMid() }),
+    update: ({ id, category, title, content, files }) => updateFaq(id, { category, title, content, files }),
+    delete: ({ id }) => deleteFaq(id),
+    setup: () => getFaqSetup(),
+    upload: ({ files }) => uploadFaqFiles(files),
+  },
+  {
+    period_start: z.string().optional().describe("(list) 시작일 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 종료일 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("FAQ id — list 필터 / update·delete 대상"),
+    title: z.string().optional().describe("list 제목검색 / create·update 질문 제목"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listFaqs(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_faq",
-  "FAQ를 등록한다(운영자). category·title·content 필수. 작성자는 로그인 운영자로 자동 등록. " +
-    "첨부는 먼저 upload_faq_files 로 올려 files 에 id 를 넣는다. 분류(category)는 faq_setup 에서 확인.",
-  {
-    category: z.string().describe("분류(faq_setup 의 categories 중 선택)"),
-    title: z.string().describe("질문 제목"),
-    content: z.string().describe("답변 내용(HTML 가능)"),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록(최대 3)"),
-  },
-  async ({ ...body }) => {
-    try {
-      body.mid = await operatorMid();
-      return ok(await createFaq(body));
-    } catch (e) { return fail(e.message); }
+    category: z.string().optional().describe("create/update 분류(setup 의 categories 중)"),
+    content: z.string().optional().describe("create/update 답변 내용(HTML 가능)"),
+    files: z.array(z.union([z.number().int(), z.string()])).optional().describe("create/update=첨부 file id / upload=로컬파일 경로(최대 3)"),
   }
-);
-
-server.tool(
-  "update_faq",
-  "FAQ를 수정한다(운영자). id 와 바꿀 필드만(category/title/content/files).",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("FAQ id"),
-    category: z.string().optional(),
-    title: z.string().optional(),
-    content: z.string().optional(),
-    files: z.array(z.number().int()).optional().describe("첨부 file id 목록"),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateFaq(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_faq",
-  "FAQ를 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 FAQ id") },
-  async ({ id }) => { try { return ok(await deleteFaq(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "faq_setup",
-  "FAQ 설정을 조회한다(운영자). 분류(categories)·첨부 제한(uploadCount/uploadSize) 반환.",
-  {},
-  async () => { try { return ok(await getFaqSetup()); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "upload_faq_files",
-  "FAQ 첨부파일을 업로드한다(운영자). 로컬 파일(최대 3). items[].id 를 create_faq/update_faq 의 files 로.",
-  { files: z.array(z.string()).min(1).max(3).describe("업로드할 로컬 파일 경로 목록(최대 3)") },
-  async ({ files }) => { try { return ok(await uploadFaqFiles(files)); } catch (e) { return fail(e.message); } }
 );
 
 // ── 스킨 조회 (운영자) ────────────────────────────────────────────────────────
@@ -1649,38 +1310,18 @@ const memberListParams = {
   expand: z.string().optional().describe("origin(기본)/info/files 조합. 활동정보·파일까지 보려면 origin,info,files"),
 };
 
-server.tool(
-  "list_members",
-  "회원 목록을 조회한다(운영자). 가입일·아이디·휴대폰·등급으로 필터. 기본 expand=origin(기본정보). " +
-    "활동정보(주문수·포인트 등)·파일까지 보려면 expand=origin,info,files. " +
-    "⚠️ 응답에는 이름·연락처·이메일·주소·계좌 등 개인정보(PII)가 포함되니 취급에 주의하라.",
-  memberListParams,
-  async (params) => { try { return ok(await listMembers(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "get_member",
-  "회원 상세를 조회한다(운영자). 회원번호(mid)로 origin(기본정보)·info(활동정보)·files(파일)를 반환. " +
-    "⚠️ 개인정보(PII: 이름/연락처/이메일/주소/계좌)가 복호화되어 포함되니 취급에 주의하라.",
+crudTool(
+  "members",
+  "회원계정 조회(운영자, 조회 전용). action: list|get|dormant|dropout. " +
+    "list/dormant(휴면 state=2)/dropout(탈퇴 state=3)는 가입일·아이디(uid)·휴대폰(hp)·등급(level) 필터(기본 expand=origin). " +
+    "get 은 mid 단건으로 origin·info·files 반환. ⚠️PII(이름/연락처/이메일/주소/계좌)가 복호화되어 포함되니 취급에 주의.",
   {
-    mid: z.union([z.number().int(), z.string()]).describe("회원번호(mid)"),
-    expand: z.string().optional().describe("기본: origin,info,files"),
+    list: (p) => listMembers(p),
+    get: ({ mid, expand }) => getMember(mid, expand || "origin,info,files"),
+    dormant: (p) => listDormantMembers(p),
+    dropout: (p) => listDropoutMembers(p),
   },
-  async ({ mid, expand }) => { try { return ok(await getMember(mid, expand || "origin,info,files")); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "list_dormant_members",
-  "휴면회원 목록을 조회한다(운영자). 필터는 list_members 와 동일. (state=2 휴면 계정)",
-  memberListParams,
-  async (params) => { try { return ok(await listDormantMembers(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "list_dropout_members",
-  "탈퇴회원 목록을 조회한다(운영자). 필터는 list_members 와 동일. (state=3 탈퇴 계정)",
-  memberListParams,
-  async (params) => { try { return ok(await listDropoutMembers(params)); } catch (e) { return fail(e.message); } }
+  { ...memberListParams }
 );
 
 // ── 회원등급 (운영자 CRUD) ─────────────────────────────────────────────────────
@@ -1694,262 +1335,143 @@ const levelCoupon = z.array(z.object({
   quantity: z.number().int().min(0).optional().describe("지급 수량"),
 })).max(4).optional().describe("등급 지급 쿠폰(최대 4)");
 
-server.tool(
-  "list_levels",
-  "회원등급 목록을 조회한다(운영자). 각 항목: level(등급번호)·title·discount(등급할인)·point(적립)·" +
-    "levelup(자동등업 조건)·coupon(지급쿠폰)·icon.",
+crudTool(
+  "levels",
+  "회원등급 관리(운영자). action: list|create|update|delete. " +
+    "list 각 항목 level·title·discount·point·levelup·coupon·icon. " +
+    "create 는 level(중복불가)·title(≤8자) 필수, discount/point/levelup/coupon/icon 선택. " +
+    "update 는 id(등급번호)+바꿀 필드. 기본등급(<2)·관리자등급(>100)은 삭제 불가.",
   {
-    level: z.string().optional().describe("등급번호 단건/콤마 복수로 필터"),
-    page: z.number().int().min(1).optional(),
-    limit: z.number().int().min(1).max(1000).optional(),
+    list: ({ level, page, limit }) => listLevels({ level, page, limit }),
+    create: ({ level, title, onoff, icon, levelup, discount, point, coupon }) =>
+      createLevel({ level, title, onoff, icon, levelup, discount, point, coupon }),
+    update: ({ id, title, onoff, icon, levelup, discount, point, coupon }) =>
+      updateLevel(id, { title, onoff, icon, levelup, discount, point, coupon }),
+    delete: ({ id }) => deleteLevel(id),
   },
-  async (params) => { try { return ok(await listLevels(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_level",
-  "회원등급을 등록한다(운영자). level(등급번호, 중복불가)·title(최대 8자) 필수. " +
-    "discount(등급할인)·point(적립)·levelup(자동등업)·coupon(지급쿠폰)은 선택. icon 은 아이콘 id(ct=3).",
   {
-    level: z.number().int().describe("등급번호(중복 불가)"),
-    title: z.string().describe("등급명(최대 8자)"),
+    level: z.union([z.number().int(), z.string()]).optional().describe("list=등급번호 필터(콤마 복수) / create=등급번호(중복불가)"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("(update/delete) 대상 등급번호"),
+    title: z.string().optional().describe("(create/update) 등급명(최대 8자)"),
     onoff: z.number().int().min(0).max(1).optional().describe("1=사용"),
-    icon: z.number().int().optional().describe("아이콘 id (list_icons, ct=3)"),
+    icon: z.number().int().optional().describe("아이콘 id (icons ct=3)"),
     levelup: z.object({
       use: z.number().int().min(0).max(3).optional().describe("자동등업 조건 사용(0~3)"),
       order: z.number().int().min(0).optional().describe("주문 횟수 조건"),
       price: z.number().int().min(0).optional().describe("주문 금액 조건"),
-    }).optional(),
-    discount: levelDiscount.describe("등급 할인 {type,price,max}"),
-    point: levelDiscount.describe("등급 적립 {type,price,max}"),
+    }).optional().describe("(create/update) 자동등업 조건"),
+    discount: levelDiscount.describe("(create/update) 등급 할인 {type,price,max}"),
+    point: levelDiscount.describe("(create/update) 등급 적립 {type,price,max}"),
     coupon: levelCoupon,
-  },
-  async (body) => { try { return ok(await createLevel(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_level",
-  "회원등급을 수정한다(운영자). id(등급번호)와 바꿀 필드만(create_level 과 같은 구조).",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("수정할 등급번호"),
-    title: z.string().optional().describe("등급명(최대 8자)"),
-    onoff: z.number().int().min(0).max(1).optional(),
-    icon: z.number().int().optional(),
-    levelup: z.object({
-      use: z.number().int().min(0).max(3).optional(),
-      order: z.number().int().min(0).optional(),
-      price: z.number().int().min(0).optional(),
-    }).optional(),
-    discount: levelDiscount,
-    point: levelDiscount,
-    coupon: levelCoupon,
-  },
-  async ({ id, ...body }) => { try { return ok(await updateLevel(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_level",
-  "회원등급을 삭제한다(운영자). 기본등급(<2)·관리자등급(>100)은 삭제 불가.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 등급번호") },
-  async ({ id }) => { try { return ok(await deleteLevel(id)); } catch (e) { return fail(e.message); } }
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  }
 );
 
 // ── 쿠폰 설정 (운영자) ────────────────────────────────────────────────────────
-server.tool(
-  "list_coupons",
-  "쿠폰(설정/템플릿) 목록을 조회한다(운영자). 각 항목: id·title·coupon_type·discount_type·할인값·" +
-    "사용조건·발급/사용 수량 등. 발급 시 이 쿠폰 id 를 쓴다.",
+crudTool(
+  "coupons",
+  "쿠폰 설정/디자인 관리(운영자). action: list|designs|create|update|delete. " +
+    "list 항목 id·title·coupon_type·discount_type·할인값·사용조건. designs 는 쿠폰 디자인 목록(create 의 design_id). " +
+    "create 필수: coupon_type(1=일반/2=상품/3=배송)·discount_type(0=배송비/1=정액/2=%)·discount_price(%면0)·discount_percent(정액이면0)·" +
+    "use_type(1=발급후N일→use_day / 2=만료일→use_dt)·design_id. update 는 id+바꿀 필드.",
   {
-    period_start: z.string().optional().describe("등록일 검색 시작 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("등록일 검색 종료 YYYY-MM-DD (기본 오늘)"),
-    id: z.string().optional().describe("쿠폰 id 단건/콤마 복수"),
-    title: z.string().optional().describe("제목 부분검색"),
+    list: ({ period_start, period_end, id, title, page, limit }) => listCoupons({ period_start, period_end, id, title, page, limit }),
+    designs: ({ id, title, page, limit }) => listCouponDesigns({ id, title, page, limit }),
+    create: (b) => createCoupon(b),
+    update: ({ id, ...b }) => updateCoupon(id, b),
+    delete: ({ id }) => deleteCoupon(id),
+  },
+  {
+    period_start: z.string().optional().describe("(list) 등록일 시작 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 등록일 종료 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("쿠폰/디자인 id — list/designs 필터 / update·delete 대상"),
+    title: z.string().optional().describe("list 제목검색 / create·update 쿠폰 제목"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listCoupons(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "list_coupon_designs",
-  "쿠폰 디자인 목록을 조회한다(운영자). create_coupon 의 design_id 는 여기 id 에서 고른다.",
-  {
-    id: z.string().optional().describe("디자인 id 단건/콤마 복수"),
-    title: z.string().optional(),
-    page: z.number().int().min(1).optional(),
-    limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listCouponDesigns(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_coupon",
-  "쿠폰을 등록한다(운영자). 필수: coupon_type(1=일반,2=상품할인,3=배송할인)·discount_type(0=배송비,1=정액,2=%)·" +
-    "discount_price(정액/배송 할인액; %면 0)·discount_percent(%값 0~99; 정액이면 0)·use_type(1=발급후N일,2=지정만료일)·" +
-    "design_id(list_coupon_designs). use_type=1 이면 use_day, use_type=2 이면 use_dt(YYYY-MM-DDThh:mm:ss+09:00) 필요. " +
-    "discount_terms_price(최소주문액)·discount_max_price(최대할인)·level(대상등급)·pincode 등은 선택.",
-  {
-    coupon_type: z.number().int().min(1).max(3).describe("1=일반 2=상품할인 3=배송할인"),
-    discount_type: z.number().int().min(0).max(2).describe("0=배송비 1=정액 2=퍼센트"),
-    discount_price: z.number().int().min(0).describe("정액/배송 할인액(%면 0)"),
-    discount_percent: z.number().int().min(0).max(99).describe("% 할인값(정액이면 0)"),
-    use_type: z.number().int().min(1).max(2).describe("1=발급후 N일 2=지정 만료일"),
-    design_id: z.number().int().describe("쿠폰 디자인 id (list_coupon_designs)"),
-    use_day: z.number().int().min(0).max(999).optional().describe("use_type=1: 사용가능 일수"),
-    use_dt: z.string().optional().describe("use_type=2: 만료일시 YYYY-MM-DDThh:mm:ss+09:00"),
+    coupon_type: z.number().int().min(1).max(3).optional().describe("(create/update) 1=일반 2=상품할인 3=배송할인"),
+    discount_type: z.number().int().min(0).max(2).optional().describe("(create/update) 0=배송비 1=정액 2=%"),
+    discount_price: z.number().int().min(0).optional().describe("(create/update) 정액/배송 할인액(%면 0)"),
+    discount_percent: z.number().int().min(0).max(99).optional().describe("(create/update) % 할인값(정액이면 0)"),
+    use_type: z.number().int().min(1).max(2).optional().describe("(create/update) 1=발급후 N일 2=지정 만료일"),
+    design_id: z.number().int().optional().describe("(create/update) 쿠폰 디자인 id (designs)"),
+    use_day: z.number().int().min(0).max(999).optional().describe("use_type=1 사용가능 일수"),
+    use_dt: z.string().optional().describe("use_type=2 만료일시 YYYY-MM-DDThh:mm:ss+09:00"),
     discount_terms_price: z.number().int().min(0).optional().describe("최소 주문금액"),
     discount_max_price: z.number().int().min(0).optional().describe("최대 할인액(%쿠폰)"),
     name: z.string().optional().describe("쿠폰명(내부)"),
-    title: z.string().optional().describe("쿠폰 제목"),
     category: z.string().optional().describe("대상 카테고리 code"),
     level: z.number().int().optional().describe("대상 회원등급"),
     pincode: z.string().optional().describe("핀코드"),
     overlap: z.number().int().optional().describe("중복사용 0/1/7/30/999"),
     onoff: z.number().int().min(0).max(1).optional().describe("1=사용"),
     down_max: z.number().int().optional().describe("최대 다운로드 수"),
-  },
-  async (body) => { try { return ok(await createCoupon(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_coupon",
-  "쿠폰을 수정한다(운영자). id 와 바꿀 필드만(create_coupon 과 같은 필드).",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("쿠폰 id"),
-    coupon_type: z.number().int().min(1).max(3).optional(),
-    discount_type: z.number().int().min(0).max(2).optional(),
-    discount_price: z.number().int().min(0).optional(),
-    discount_percent: z.number().int().min(0).max(99).optional(),
-    use_type: z.number().int().min(1).max(2).optional(),
-    use_day: z.number().int().min(0).max(999).optional(),
-    use_dt: z.string().optional(),
-    discount_terms_price: z.number().int().min(0).optional(),
-    discount_max_price: z.number().int().min(0).optional(),
-    design_id: z.number().int().optional(),
-    name: z.string().optional(),
-    title: z.string().optional(),
-    category: z.string().optional(),
-    level: z.number().int().optional(),
-    pincode: z.string().optional(),
-    overlap: z.number().int().optional(),
-    onoff: z.number().int().min(0).max(1).optional(),
-    down_max: z.number().int().optional(),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateCoupon(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_coupon",
-  "쿠폰을 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 쿠폰 id") },
-  async ({ id }) => { try { return ok(await deleteCoupon(id)); } catch (e) { return fail(e.message); } }
-);
-
-// ── 쿠폰 발급 (운영자) ────────────────────────────────────────────────────────
-server.tool(
-  "list_coupon_issues",
-  "발급된 쿠폰 내역을 조회한다(운영자). 쿠폰·회원·기간으로 필터. 각 항목: id(발급 id)·coupon_id·mid·" +
-    "사용상태(state)·use_dt 등.",
-  {
-    period_start: z.string().optional().describe("발급일 검색 시작 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("발급일 검색 종료 YYYY-MM-DD (기본 오늘)"),
-    id: z.string().optional().describe("발급 id 단건/콤마 복수"),
-    coupon_id: z.number().int().optional().describe("쿠폰 id 로 필터"),
-    mid: z.number().int().optional().describe("회원번호로 필터"),
-    uid: z.string().optional().describe("아이디로 필터"),
-    page: z.number().int().min(1).optional(),
-    limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listCouponIssues(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "issue_coupon",
-  "쿠폰을 회원에게 발급한다(운영자). 1회 호출당 회원 1명. coupon_id(list_coupons)·mid(대상 회원)·" +
-    "coupon_name(발급 쿠폰명, 최대 20자)·ct(발급 구분) 필수. 여러 명에게 주려면 회원마다 반복 호출한다.",
-  {
-    coupon_id: z.number().int().describe("발급할 쿠폰 id (list_coupons)"),
-    mid: z.number().int().describe("대상 회원번호(mid)"),
-    coupon_name: z.string().max(20).describe("발급 쿠폰명(최대 20자)"),
-    ct: z.number().int().describe("발급 구분 코드(쇼핑몰 정의)"),
-  },
-  async (body) => { try { return ok(await issueCoupon(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_coupon_issue",
-  "발급된 쿠폰을 삭제(회수)한다(운영자). list_coupon_issues 의 발급 id.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 발급 id") },
-  async ({ id }) => { try { return ok(await deleteCouponIssue(id)); } catch (e) { return fail(e.message); } }
-);
-
-// ── 포인트 (운영자) ───────────────────────────────────────────────────────────
-server.tool(
-  "list_points",
-  "포인트 내역을 조회한다(운영자). 회원·기간으로 필터. 각 항목: id·mid·point(부호 있음)·" +
-    "total_point(누적)·content(사유)·dt.",
-  {
-    period_start: z.string().optional().describe("검색 시작 YYYY-MM-DD (기본 오늘)"),
-    period_end: z.string().optional().describe("검색 종료 YYYY-MM-DD (기본 오늘)"),
-    mid: z.number().int().optional().describe("회원번호로 필터"),
-    uid: z.string().optional().describe("아이디로 필터"),
-    page: z.number().int().min(1).optional(),
-    limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listPoints(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_point",
-  "회원 포인트를 지급/차감한다(운영자). mid(대상 회원)·point(금액, **부호로 방향**: 양수=지급, 음수=차감)·" +
-    "content(사유) 필수. ct 는 포인트 구분 코드(0~5). 처리자(cre_mid)는 로그인 운영자로 자동 등록.",
-  {
-    mid: z.number().int().describe("대상 회원번호(mid)"),
-    point: z.number().int().describe("포인트 금액 — 양수=지급, 음수=차감 (예: 1000 지급, -500 차감)"),
-    content: z.string().max(255).describe("지급/차감 사유"),
-    ct: z.number().int().min(0).max(5).optional().describe("포인트 구분 코드(0~5, 기본 0)"),
-  },
-  async ({ mid, point, content, ct }) => {
-    try {
-      const body = { mid, point, content, ct: ct ?? 0, cre_mid: await operatorMid() };
-      return ok(await createPoint(body));
-    } catch (e) { return fail(e.message); }
   }
 );
 
-server.tool(
-  "update_point",
-  "포인트 내역을 수정한다(운영자). 금액은 변경 불가하고 사유(content)만 수정된다.",
+// ── 쿠폰 발급 (운영자) ────────────────────────────────────────────────────────
+crudTool(
+  "coupon_issues",
+  "쿠폰 발급 관리(운영자). action: list|issue|delete. list 는 쿠폰·회원·기간 필터(항목 id·coupon_id·mid·state·use_dt). " +
+    "issue 는 1회 1명(coupon_id·mid·coupon_name(≤20자)·ct 필수; 여러 명은 반복 호출). delete 는 발급 id 회수.",
   {
-    id: z.union([z.number().int(), z.string()]).describe("포인트 내역 id (list_points 의 id 값 그대로)"),
-    content: z.string().max(255).describe("수정할 사유"),
+    list: ({ period_start, period_end, id, coupon_id, mid, uid, page, limit }) =>
+      listCouponIssues({ period_start, period_end, id, coupon_id, mid, uid, page, limit }),
+    issue: ({ coupon_id, mid, coupon_name, ct }) => issueCoupon({ coupon_id, mid, coupon_name, ct }),
+    delete: ({ id }) => deleteCouponIssue(id),
   },
-  async ({ id, content }) => { try { return ok(await updatePoint(id, { content })); } catch (e) { return fail(e.message); } }
+  {
+    period_start: z.string().optional().describe("(list) 발급일 시작 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 발급일 종료 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("발급 id — list 필터 / delete 대상"),
+    coupon_id: z.number().int().optional().describe("list 필터 / issue 발급할 쿠폰 id"),
+    mid: z.number().int().optional().describe("list 필터 / issue 대상 회원번호"),
+    uid: z.string().optional().describe("(list) 아이디 필터"),
+    coupon_name: z.string().max(20).optional().describe("(issue) 발급 쿠폰명(최대 20자)"),
+    ct: z.number().int().optional().describe("(issue) 발급 구분 코드"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  }
 );
 
-server.tool(
-  "delete_point",
-  "포인트 내역을 삭제한다(운영자). 회원 누적 포인트도 함께 조정된다.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 포인트 내역 id") },
-  async ({ id }) => { try { return ok(await deletePoint(id)); } catch (e) { return fail(e.message); } }
+// ── 포인트 (운영자) ───────────────────────────────────────────────────────────
+crudTool(
+  "points",
+  "포인트 관리(운영자). action: list|create|update|delete. list 는 회원·기간 필터(항목 id·mid·point·total_point·content·dt). " +
+    "create 는 mid·point(**부호로 방향**: 양수=지급/음수=차감)·content 필수(처리자 자동). " +
+    "update 는 사유(content)만 수정(금액 변경 불가). delete 시 누적 포인트도 조정.",
+  {
+    list: ({ period_start, period_end, mid, uid, page, limit }) => listPoints({ period_start, period_end, mid, uid, page, limit }),
+    create: async ({ mid, point, content, ct }) => createPoint({ mid, point, content, ct: ct ?? 0, cre_mid: await operatorMid() }),
+    update: ({ id, content }) => updatePoint(id, { content }),
+    delete: ({ id }) => deletePoint(id),
+  },
+  {
+    period_start: z.string().optional().describe("(list) 시작 YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) 종료 YYYY-MM-DD"),
+    id: z.union([z.number().int(), z.string()]).optional().describe("포인트 내역 id — update·delete 대상"),
+    mid: z.number().int().optional().describe("list 필터 / create 대상 회원번호"),
+    uid: z.string().optional().describe("(list) 아이디 필터"),
+    point: z.number().int().optional().describe("(create) 양수=지급, 음수=차감 (예: 1000 / -500)"),
+    content: z.string().max(255).optional().describe("create/update 사유"),
+    ct: z.number().int().min(0).max(5).optional().describe("(create) 포인트 구분 코드(0~5, 기본 0)"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  }
 );
 
 // ── 쇼핑몰 기본정보 (운영자) ──────────────────────────────────────────────────
-server.tool(
-  "get_shop_company",
-  "쇼핑몰 기본정보(회사정보)를 조회한다(운영자). 상호·고객센터·운영시간·사업자정보·주소·" +
-    "개인정보보호책임자·AS 연락처 등. 푸터·약관에 노출되는 공식 정보.",
-  {},
-  async () => { try { return ok(await getShopCompany()); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_shop_company",
-  "쇼핑몰 기본정보(회사정보)를 수정한다(운영자). 보낸 필드만 갱신된다. 변경 시 푸터 캐시가 자동 갱신됨. " +
-    "전화/팩스/사업자번호는 숫자만(하이픈 자동 제거).",
+crudTool(
+  "shop_company",
+  "쇼핑몰 기본정보(회사정보). action: get|update. get 은 상호·고객센터·운영시간·사업자정보·주소·개인정보보호책임자·AS 등 조회. " +
+    "update 는 보낸 필드만 갱신(푸터 캐시 자동 갱신; 전화/팩스/사업자번호는 숫자만, 하이픈 자동 제거).",
+  {
+    get: () => getShopCompany(),
+    update: (data) => updateShopCompany(data),
+  },
   {
     title: z.string().optional().describe("상호(쇼핑몰명)"),
-    service: z.string().optional().describe("고객센터 안내(전화/시간 등 표기 문구)"),
+    service: z.string().optional().describe("고객센터 안내 문구"),
     email: z.string().optional().describe("대표 이메일"),
     tel: z.string().optional().describe("대표 전화(숫자)"),
     fax: z.string().optional().describe("팩스(숫자)"),
@@ -1969,139 +1491,66 @@ server.tool(
     pri_email: z.string().optional().describe("개인정보보호책임자 이메일"),
     as_tel: z.string().optional().describe("AS 연락처"),
     as_url: z.string().optional().describe("AS 안내 URL"),
-  },
-  async (data) => { try { return ok(await updateShopCompany(data)); } catch (e) { return fail(e.message); } }
+  }
 );
 
 // ── 통합 게시판 (board_type=1, 운영자) ────────────────────────────────────────
 // 쇼핑몰 설정 board_type=1(통합 게시판)일 때 사용. 공지/1:1문의/FAQ/상품문의/구매후기가
 // 단일 게시판으로 통합되어 board_type 코드(notice|qna|faq|inquiry|review)로 구분된다.
 // (board_type=0 기본형이면 기존 개별 도구 — list_notices/list_faqs/list_reviews/문의 도구 — 를 쓴다.)
-server.tool(
-  "board_setup",
-  "통합 게시판(board_type=1) 설정을 조회한다(운영자). 5개 게시판(notice/qna/faq/inquiry/review)의 " +
-    "코드·이름·카테고리 목록·기능 사용여부(댓글/상품/별점)를 반환한다. 게시글 등록/필터 전에 호출해 " +
-    "board_type 코드와 카테고리를 확인한다.",
-  {},
-  async () => { try { return ok(await getBoardSetup()); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "list_board",
-  "통합 게시판 글 목록을 조회한다(운영자, board_type=1). 5개 게시판을 한 번에 조회하며 " +
-    "board_types(notice/qna/faq/inquiry/review)·카테고리·별점·답변상태로 필터한다. " +
-    "각 항목: id·board_type·category·title·writer_name·state(1대기/2완료/3추가문의)·reply_count·score.",
+crudTool(
+  "board",
+  "통합 게시판(board_type=1) 관리(운영자). action: setup|list|get|create|update|delete|answer|delete_reply|upload. " +
+    "⚠️board_type=0(기본형) 쇼핑몰이면 이 도구 대신 notices/faqs/reviews/product_inquiries/customer_inquiries 개별 도구를 쓴다. " +
+    "setup(게시판 코드·카테고리 확인) → list(5개 게시판 통합, board_types/카테고리/별점/states 필터) → get(상세+댓글). " +
+    "create/update 는 board_type·title·content·writer_name 등(후기는 score 1~5, 상품문의/후기는 products_id/product_id). " +
+    "answer 는 article_id+content(운영자 자동 답변, state=2). delete_reply 는 reply_id. upload 는 files(로컬, 최대5)→items[].id 를 photo(콤마구분)로.",
   {
-    board_types: z.string().optional().describe("게시판 코드 콤마구분(notice,qna,faq,inquiry,review)"),
-    category: z.string().optional().describe("카테고리로 필터"),
-    score: z.number().int().min(1).max(5).optional().describe("별점 필터(구매후기)"),
-    states: z.string().optional().describe("답변상태 콤마구분(1=대기,2=완료,3=추가문의)"),
-    notice: z.number().int().min(0).max(1).optional().describe("1=상단고정만"),
-    best: z.number().int().min(0).max(1).optional().describe("1=베스트만"),
-    keyword: z.enum(["title", "content", "uid", "writer_name"]).optional().describe("검색 필드"),
-    q: z.string().optional().describe("검색어(keyword 와 함께)"),
-    period: z.enum(["dt", "update_dt"]).optional().describe("기간 기준(기본 dt)"),
-    period_start: z.string().optional().describe("YYYY-MM-DD"),
-    period_end: z.string().optional().describe("YYYY-MM-DD"),
-    order: z.number().int().min(1).max(4).optional().describe("1=최신 2=오래된순 3=댓글많은순 4=조회순"),
+    setup: () => getBoardSetup(),
+    list: ({ board_types, category, score, states, notice, best, keyword, q, period, period_start, period_end, order, page, limit }) =>
+      listBoard({ board_types, category, score, states, notice, best, keyword, q, period, period_start, period_end, order, page, limit }),
+    get: ({ id }) => getBoardPost(id),
+    create: ({ board_type, title, content, writer_name, category, score, products_id, product_id, secret, notice, best, url, video_url, photo, uid, dt }) =>
+      createBoardPost({ board_type, title, content, writer_name, category, score, products_id, product_id, secret, notice, best, url, video_url, photo, uid, dt }),
+    update: ({ id, board_type, title, content, writer_name, category, score, products_id, product_id, secret, notice, best, url, video_url, photo, dt }) =>
+      updateBoardPost(id, { board_type, title, content, writer_name, category, score, products_id, product_id, secret, notice, best, url, video_url, photo, dt }),
+    delete: ({ id }) => deleteBoardPost(id),
+    answer: ({ article_id, content, photo }) => replyBoardPost({ article_id, content, ...(photo ? { photo } : {}) }),
+    delete_reply: ({ reply_id }) => deleteBoardReply(reply_id),
+    upload: ({ files }) => uploadBoardFiles(files),
+  },
+  {
+    id: z.union([z.number().int(), z.string()]).optional().describe("게시글 번호 — get/update/delete 대상"),
+    board_type: z.enum(["notice", "qna", "faq", "inquiry", "review"]).optional().describe("(create/update) 게시판 코드"),
+    board_types: z.string().optional().describe("(list) 게시판 코드 콤마구분(notice,qna,faq,inquiry,review)"),
+    title: z.string().optional().describe("(create/update) 제목"),
+    content: z.string().optional().describe("create/update 내용 / answer 답변 내용"),
+    writer_name: z.string().optional().describe("(create/update) 작성자명"),
+    category: z.string().optional().describe("list 필터 / create·update 카테고리(board_setup 참조)"),
+    score: z.number().int().min(0).max(5).optional().describe("list 별점 필터 / create·update 별점(구매후기 1~5)"),
+    states: z.string().optional().describe("(list) 답변상태 콤마구분(1=대기,2=완료,3=추가문의)"),
+    notice: z.number().int().min(0).max(1).optional().describe("list=상단고정만 / create·update=1 상단고정"),
+    best: z.number().int().min(0).max(1).optional().describe("list=베스트만 / create·update=1 베스트"),
+    keyword: z.enum(["title", "content", "uid", "writer_name"]).optional().describe("(list) 검색 필드"),
+    q: z.string().optional().describe("(list) 검색어(keyword 와 함께)"),
+    period: z.enum(["dt", "update_dt"]).optional().describe("(list) 기간 기준(기본 dt)"),
+    period_start: z.string().optional().describe("(list) YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) YYYY-MM-DD"),
+    order: z.number().int().min(1).max(4).optional().describe("(list) 1=최신 2=오래된순 3=댓글많은순 4=조회순"),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(1000).optional(),
-  },
-  async (params) => { try { return ok(await listBoard(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "get_board_post",
-  "통합 게시판 글 상세를 조회한다(운영자). 본문·첨부·상품·댓글(답변)까지 포함.",
-  { id: z.union([z.number().int(), z.string()]).describe("게시글 번호(list_board 의 id)") },
-  async ({ id }) => { try { return ok(await getBoardPost(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "answer_board_post",
-  "통합 게시판 글에 운영자 답변(댓글)을 등록한다(운영자). 답변자는 로그인 운영자로 자동 등록되고 " +
-    "게시글이 답변완료(state=2)로 바뀐다. 1:1문의·상품문의 답변에 사용.",
-  {
-    article_id: z.union([z.number().int(), z.string()]).describe("게시글 번호"),
-    content: z.string().describe("답변 내용"),
-    photo: z.string().optional().describe("첨부 file id 콤마구분(upload_board_files 결과)"),
-  },
-  async ({ article_id, content, photo }) => {
-    try { return ok(await replyBoardPost({ article_id, content, ...(photo ? { photo } : {}) })); }
-    catch (e) { return fail(e.message); }
+    products_id: z.number().int().optional().describe("(create/update) 상품 id(상품문의/후기)"),
+    product_id: z.number().int().optional().describe("(create/update) 옵션 id(상품문의/후기)"),
+    secret: z.number().int().min(0).max(1).optional().describe("(create/update) 1=비밀글"),
+    url: z.string().optional().describe("(create/update) 외부 링크"),
+    video_url: z.string().optional().describe("(create/update) 동영상 URL"),
+    photo: z.string().optional().describe("create/update/answer 첨부 file id 콤마구분"),
+    uid: z.string().optional().describe("(create) 작성자 아이디"),
+    dt: z.string().optional().describe("(create/update) 작성일시 YYYY-MM-DD HH:MM:SS"),
+    article_id: z.union([z.number().int(), z.string()]).optional().describe("(answer) 답변 달 게시글 번호"),
+    reply_id: z.union([z.number().int(), z.string()]).optional().describe("(delete_reply) 답변(댓글) id"),
+    files: z.array(z.string()).optional().describe("(upload) 로컬 파일 경로 목록(최대 5)"),
   }
-);
-
-server.tool(
-  "delete_board_reply",
-  "통합 게시판 답변(댓글)을 삭제한다(운영자). 삭제 후 게시글 답변상태가 재계산된다.",
-  { id: z.union([z.number().int(), z.string()]).describe("답변(댓글) id") },
-  async ({ id }) => { try { return ok(await deleteBoardReply(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_board_post",
-  "통합 게시판 글을 등록한다(운영자 작성). board_type(게시판 코드)·title·content·writer_name 필수. " +
-    "카테고리는 board_setup 의 categories 중 선택. 상품문의·후기는 products_id/product_id, 후기는 score(1~5). " +
-    "첨부는 먼저 upload_board_files 로 올려 photo 에 콤마구분 id 를 넣는다.",
-  {
-    board_type: z.enum(["notice", "qna", "faq", "inquiry", "review"]).describe("게시판 코드"),
-    title: z.string().describe("제목"),
-    content: z.string().describe("내용(HTML 가능)"),
-    writer_name: z.string().describe("작성자명"),
-    category: z.string().optional().describe("카테고리(board_setup 참조)"),
-    score: z.number().int().min(0).max(5).optional().describe("별점(구매후기 1~5)"),
-    products_id: z.number().int().optional().describe("상품 id(상품문의/후기)"),
-    product_id: z.number().int().optional().describe("옵션 id(상품문의/후기)"),
-    secret: z.number().int().min(0).max(1).optional().describe("1=비밀글"),
-    notice: z.number().int().min(0).max(1).optional().describe("1=상단고정"),
-    best: z.number().int().min(0).max(1).optional().describe("1=베스트"),
-    url: z.string().optional().describe("외부 링크"),
-    video_url: z.string().optional().describe("동영상 URL"),
-    photo: z.string().optional().describe("첨부 file id 콤마구분"),
-    uid: z.string().optional().describe("작성자 아이디(선택)"),
-    dt: z.string().optional().describe("작성일시 YYYY-MM-DD HH:MM:SS (생략 시 현재)"),
-  },
-  async (body) => { try { return ok(await createBoardPost(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "update_board_post",
-  "통합 게시판 글을 수정한다(운영자). id 와 바꿀 필드만(create_board_post 와 같은 필드).",
-  {
-    id: z.union([z.number().int(), z.string()]).describe("게시글 번호"),
-    board_type: z.enum(["notice", "qna", "faq", "inquiry", "review"]).optional(),
-    title: z.string().optional(),
-    content: z.string().optional(),
-    writer_name: z.string().optional(),
-    category: z.string().optional(),
-    score: z.number().int().min(0).max(5).optional(),
-    products_id: z.number().int().optional(),
-    product_id: z.number().int().optional(),
-    secret: z.number().int().min(0).max(1).optional(),
-    notice: z.number().int().min(0).max(1).optional(),
-    best: z.number().int().min(0).max(1).optional(),
-    url: z.string().optional(),
-    video_url: z.string().optional(),
-    photo: z.string().optional(),
-    dt: z.string().optional().describe("YYYY-MM-DD HH:MM:SS"),
-  },
-  async ({ id, ...body }) => { try { return ok(await updateBoardPost(id, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_board_post",
-  "통합 게시판 글을 삭제한다(운영자). 댓글·첨부도 함께 정리되고 후기/문의 카운터가 보정된다.",
-  { id: z.union([z.number().int(), z.string()]).describe("삭제할 게시글 번호") },
-  async ({ id }) => { try { return ok(await deleteBoardPost(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "upload_board_files",
-  "통합 게시판 첨부파일을 업로드한다(운영자). 로컬 파일(최대 5). items[].id 를 " +
-    "create_board_post/update_board_post/answer_board_post 의 photo(콤마구분)로 넣는다.",
-  { files: z.array(z.string()).min(1).max(5).describe("업로드할 로컬 파일 경로(최대 5)") },
-  async ({ files }) => { try { return ok(await uploadBoardFiles(files)); } catch (e) { return fail(e.message); } }
 );
 
 // ── 개인결제(private_pay) (운영자) ───────────────────────────────────────────
@@ -2110,176 +1559,109 @@ server.tool(
 //  결제상태 pay_state: 0=발급완료 1=입금대기 10=결제완료 90=취소접수 99=취소완료
 //  결제수단 pay_method: 130=가상계좌·300=무통장(취소 시 계좌이체 환불) / 그 외 PG는 승인취소
 
-server.tool(
-  "list_private_pays",
-  "개인결제(개인 결제창) 목록을 조회한다(운영자). 기간·상태·유형·수신자·번호로 검색한다. " +
-    "pay_state(0=발급완료,1=입금대기,10=결제완료,90=취소접수,99=취소완료), ct(1,2,10,11,20,21,99)는 콤마로 복수 지정 가능. " +
-    "번호검색은 code(ppno|dno|pay_no)+codes(콤마/개행)로 한다.",
+crudTool(
+  "private_pay",
+  "개인결제(개인 결제창) 관리(운영자). action: list|get|create|update|delete|banking|cancel|receipt_issue|receipt_cancel|memo_list|memo_add|memo_delete|exchange_pay|refund_pay. " +
+    "create 는 발급 즉시 안내 메시지 발송 + data·url 반환(사용자에게 url·금액 안내). 회원은 uid, 비회원은 name/hp/email. " +
+    "update 는 발급완료(0)면 ct/price/dno/content/pg_id, 결제 후엔 무통장/환불계좌(pay_bank_*/refund_bank_*). " +
+    "banking=무통장 입금확인(→10), cancel=취소(PG 승인취소/무통장). receipt_issue=현금영수증 발급(48h), receipt_cancel=취소(발행완료·1년내). " +
+    "memo_list/memo_add(content)/memo_delete(memo_id). exchange_pay(eno,price)=교환 추가비용(ct=21), refund_pay(rno,price)=반품 추가비용(ct=11).",
   {
-    page: z.number().int().min(1).optional().describe("페이지(기본 1)"),
-    limit: z.number().int().min(1).max(1000).optional().describe("페이지당 개수(기본 20, 최대 1000)"),
-    period: z.enum(["dt", "pay_dt", "can_dt"]).optional().describe("기간 기준 컬럼(dt=발급/pay_dt=결제/can_dt=취소)"),
-    period_start: z.string().optional().describe("기간 시작 YYYY-MM-DD"),
-    period_end: z.string().optional().describe("기간 종료 YYYY-MM-DD"),
-    pay_state: z.string().optional().describe("결제상태(콤마 구분: 0,1,10,90,99)"),
-    ct: z.string().optional().describe("결제유형(콤마 구분: 1,2,10,11,20,21,99)"),
-    name: z.string().optional().describe("수신자명(정확히 일치)"),
-    email: z.string().optional().describe("이메일(정확히 일치)"),
-    hp: z.string().optional().describe("휴대폰(정확히 일치)"),
-    title: z.string().optional().describe("결제명(부분검색)"),
-    code: z.enum(["ppno", "dno", "pay_no"]).optional().describe("번호검색 항목"),
-    codes: z.string().optional().describe("번호검색 값(콤마/개행 구분, code 와 함께)"),
-    order: z.enum(["1", "2", "3"]).optional().describe("정렬(1=발급최신 2=결제최신 3=취소최신)"),
+    list: ({ page, limit, period, period_start, period_end, pay_state, ct, name, email, hp, title, code, codes, order }) =>
+      listPrivatePays({ page, limit, period, period_start, period_end, pay_state, ct, name, email, hp, title, code, codes, order }),
+    get: ({ ppno }) => getPrivatePay(ppno),
+    create: ({ ct, price, uid, name, hp, email, dno, rno, eno, content, pg_id }) =>
+      createPrivatePay({ ct, price, uid, name, hp, email, dno, rno, eno, content, pg_id }),
+    update: ({ ppno, ct, price, dno, content, pg_id, pay_bank_code, pay_bank_num, pay_bank_holder, pay_bank_name, refund_bank_code, refund_bank_num, refund_bank_holder, refund_bank_title }) =>
+      updatePrivatePay(ppno, { ct, price, dno, content, pg_id, pay_bank_code, pay_bank_num, pay_bank_holder, pay_bank_name, refund_bank_code, refund_bank_num, refund_bank_holder, refund_bank_title }),
+    delete: ({ ppno }) => deletePrivatePay(ppno),
+    banking: ({ ppno, pay_bank_code, pay_bank_name }) => confirmPrivatePayBanking({ ppno, pay_bank_code, pay_bank_name }),
+    cancel: ({ ppno }) => cancelPrivatePay({ ppno }),
+    receipt_issue: ({ ppno, pay_receipt_type, pay_receipt_name, pay_receipt_num, pay_receipt_dt }) =>
+      createPrivatePayReceipt({ ppno, pay_receipt_type, pay_receipt_name, pay_receipt_num, pay_receipt_dt }),
+    receipt_cancel: ({ ppno }) => cancelPrivatePayReceipt(ppno),
+    memo_list: ({ ppno }) => listPrivatePayMemos(ppno),
+    memo_add: ({ ppno, content }) => createPrivatePayMemo({ ppno, content }),
+    memo_delete: ({ memo_id }) => deletePrivatePayMemo(memo_id),
+    exchange_pay: ({ eno, price, content }) => createExchangePrivatePay({ eno, price, content }),
+    refund_pay: ({ rno, price, content }) => createRefundPrivatePay({ rno, price, content }),
   },
-  async (params) => { try { return ok(await listPrivatePays(params)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "get_private_pay",
-  "개인결제 단건 상세를 조회한다(운영자). 결제/입금은행/환불계좌/취소/현금영수증 정보를 포함한다.",
-  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
-  async ({ ppno }) => { try { return ok(await getPrivatePay(ppno)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_private_pay",
-  "개인 결제창을 발급한다(운영자). 발급 즉시 수신자에게 결제 안내 메시지(SMS/알림톡/이메일)가 발송되고, " +
-    "발급된 결제창 정보(data, 결제 url)를 반환한다 — 사용자에게 url·금액·유형을 안내하라. " +
-    "회원은 uid 로(자동 수신자정보), 비회원은 name/hp/email 을 직접 넣는다. 주문 연계 시 dno/rno/eno 를 함께 보낸다.",
   {
-    ct: z.number().int().describe("결제유형(1=주문관련 2=해외배송비 10/11=반품비용 20/21=교환비용 99=기타)"),
-    price: z.union([z.number().int(), z.string()]).describe("결제금액(원, 0 초과)"),
-    uid: z.string().optional().describe("회원 아이디(회원 발급 시). dno 와 함께면 주문자 일치 검증"),
-    name: z.string().optional().describe("수신자명(비회원)"),
-    hp: z.string().optional().describe("수신자 휴대폰(숫자 10~11자리)"),
-    email: z.string().optional().describe("수신자 이메일"),
-    dno: z.union([z.number().int(), z.string()]).optional().describe("관련 주문번호(dno)"),
-    rno: z.union([z.number().int(), z.string()]).optional().describe("반품번호(rno)"),
-    eno: z.union([z.number().int(), z.string()]).optional().describe("교환번호(eno)"),
-    content: z.string().optional().describe("결제 안내 메시지/메모"),
-    pg_id: z.number().int().optional().describe("결제대행사(PG) id — 미지정 시 기본 PG"),
-  },
-  async (body) => { try { return ok(await createPrivatePay(body)); } catch (e) { return fail(e.message); } }
+    ppno: z.union([z.number().int(), z.string()]).optional().describe("결제창번호 — get/update/delete/banking/cancel/receipt_*/memo_* 대상"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+    period: z.enum(["dt", "pay_dt", "can_dt"]).optional().describe("(list) dt=발급/pay_dt=결제/can_dt=취소"),
+    period_start: z.string().optional().describe("(list) YYYY-MM-DD"),
+    period_end: z.string().optional().describe("(list) YYYY-MM-DD"),
+    pay_state: z.string().optional().describe("(list) 결제상태 콤마구분(0,1,10,90,99)"),
+    ct: z.union([z.number().int(), z.string()]).optional().describe("list=유형 콤마필터 / create·update=결제유형(1=주문 2=해외배송비 10/11=반품 20/21=교환 99=기타)"),
+    name: z.string().optional().describe("list 필터 / create 수신자명(비회원)"),
+    email: z.string().optional().describe("list 필터 / create 수신자 이메일"),
+    hp: z.string().optional().describe("list 필터 / create 수신자 휴대폰(숫자 10~11)"),
+    title: z.string().optional().describe("(list) 결제명 부분검색"),
+    code: z.enum(["ppno", "dno", "pay_no"]).optional().describe("(list) 번호검색 항목"),
+    codes: z.string().optional().describe("(list) 번호검색 값(콤마/개행)"),
+    order: z.enum(["1", "2", "3"]).optional().describe("(list) 1=발급최신 2=결제최신 3=취소최신"),
+    price: z.union([z.number().int(), z.string()]).optional().describe("create/update/exchange_pay/refund_pay 금액(원, 0 초과)"),
+    uid: z.string().optional().describe("(create) 회원 아이디(dno 와 함께면 주문자 검증)"),
+    dno: z.union([z.number().int(), z.string()]).optional().describe("create/update 관련 주문번호(dno)"),
+    rno: z.union([z.number().int(), z.string()]).optional().describe("create 반품번호 / refund_pay 대상 반품번호"),
+    eno: z.union([z.number().int(), z.string()]).optional().describe("create 교환번호 / exchange_pay 대상 교환번호"),
+    content: z.string().optional().describe("create/update 안내메시지 / memo_add 메모 / exchange·refund_pay 안내"),
+    pg_id: z.number().int().optional().describe("create/update PG id(미지정 시 기본 PG)"),
+    pay_bank_code: z.string().optional().describe("update/banking 입금은행 코드"),
+    pay_bank_num: z.string().optional().describe("(update) 무통장 입금 계좌번호"),
+    pay_bank_holder: z.string().optional().describe("(update) 무통장 입금 예금주"),
+    pay_bank_name: z.string().optional().describe("update/banking 입금자명"),
+    refund_bank_code: z.string().optional().describe("(update) 환불 은행 코드"),
+    refund_bank_num: z.string().optional().describe("(update) 환불 계좌번호"),
+    refund_bank_holder: z.string().optional().describe("(update) 환불 예금주"),
+    refund_bank_title: z.string().optional().describe("(update) 환불 은행명"),
+    pay_receipt_type: z.number().int().optional().describe("(receipt_issue) 1=소득공제 2=지출증빙"),
+    pay_receipt_name: z.string().optional().describe("(receipt_issue) 대상 이름/명의"),
+    pay_receipt_num: z.string().optional().describe("(receipt_issue) 휴대폰번호/사업자번호"),
+    pay_receipt_dt: z.string().optional().describe("(receipt_issue) 거래일시 YYYY-MM-DD HH:MM:SS(48h 이내)"),
+    memo_id: z.union([z.number().int(), z.string()]).optional().describe("(memo_delete) 메모 id"),
+  }
 );
 
-server.tool(
-  "update_private_pay",
-  "개인결제를 수정한다(운영자). 발급완료(pay_state=0)면 ct/price/dno/content/pg_id 를 수정하고, " +
-    "결제 후에는 무통장 입금정보(pay_bank_*)·환불계좌(refund_bank_*)만 수정한다.",
+// ── 현금영수증 관리(Cash) (운영자) ───────────────────────────────────────────
+// 주문 결제(pno) 대상 현금영수증. (개인결제 결제창의 현금영수증은 create/cancel_private_pay_receipt 사용)
+//  발행상태 pay_receipt_state: 1=신청안함 2=발행요청 3=발행완료 4=취소완료
+//  용도구분 pay_receipt_type: 1=소득공제(휴대폰) 2=지출증빙(사업자) 3=세금계산서 4=자진발급
+
+crudTool(
+  "cash_receipts",
+  "현금영수증 관리(주문 결제 pno 기준, 운영자). action: list|get|issue|cancel. " +
+    "(개인결제 결제창 현금영수증은 private_pay 의 receipt_issue/receipt_cancel) " +
+    "list 는 기간(dt/pay_dt/pay_receipt_dt, 기본 -30일)·발행상태(state 1~4)·주문상태(order_state)·수신자/번호 검색. " +
+    "get 은 pno 발행정보+발행가능금액. issue 는 결제완료(pay_state=10)+48h 이내(type 1=소득공제/2=지출증빙). cancel 은 발행완료+1년 이내.",
   {
-    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
-    ct: z.number().int().optional().describe("결제유형(발급완료 상태만)"),
-    price: z.union([z.number().int(), z.string()]).optional().describe("결제금액(발급완료 상태만)"),
-    dno: z.union([z.number().int(), z.string()]).optional().describe("관련 주문번호(발급완료 상태만)"),
-    content: z.string().optional().describe("안내 메시지/메모(발급완료 상태만)"),
-    pg_id: z.number().int().optional().describe("PG id(발급완료 상태만)"),
-    pay_bank_code: z.string().optional().describe("(무통장) 입금은행 코드"),
-    pay_bank_num: z.string().optional().describe("(무통장) 입금 계좌번호"),
-    pay_bank_holder: z.string().optional().describe("(무통장) 입금 예금주"),
-    pay_bank_name: z.string().optional().describe("(무통장) 입금자명"),
-    refund_bank_code: z.string().optional().describe("환불 은행 코드"),
-    refund_bank_num: z.string().optional().describe("환불 계좌번호"),
-    refund_bank_holder: z.string().optional().describe("환불 예금주"),
-    refund_bank_title: z.string().optional().describe("환불 은행명"),
+    list: ({ page, limit, period, period_start, period_end, state, order_state, pay_receipt_name, pay_receipt_num, name, email, code, codes }) =>
+      listCashReceipts({ page, limit, period, period_start, period_end, state, order_state, pay_receipt_name, pay_receipt_num, name, email, code, codes }),
+    get: ({ pno }) => getCashReceipt(pno),
+    issue: ({ pno, pay_receipt_type, pay_receipt_name, pay_receipt_num, pay_receipt_dt }) =>
+      issueCashReceipt({ pno, pay_receipt_type, pay_receipt_name, pay_receipt_num, pay_receipt_dt }),
+    cancel: ({ pno }) => cancelCashReceipt(pno),
   },
-  async ({ ppno, ...body }) => { try { return ok(await updatePrivatePay(ppno, body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_private_pay",
-  "개인결제를 삭제한다(운영자). 발급완료(0) 또는 취소완료(99) 상태만 삭제 가능하다(메모도 함께 삭제).",
-  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
-  async ({ ppno }) => { try { return ok(await deletePrivatePay(ppno)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "confirm_private_pay_banking",
-  "무통장입금 개인결제의 입금을 확인 처리한다(운영자). 결제완료(pay_state=10)로 변경된다. " +
-    "이미 결제완료된 건은 처리되지 않는다.",
   {
-    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
-    pay_bank_code: z.string().optional().describe("입금받은 은행 코드"),
-    pay_bank_name: z.string().optional().describe("입금자명"),
-  },
-  async (body) => { try { return ok(await confirmPrivatePayBanking(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "cancel_private_pay",
-  "개인결제를 취소한다(운영자). PG 결제건은 승인취소가 실행되고, 무통장 등은 취소 접수/완료로 처리된다. " +
-    "현금영수증 발행완료 건은 함께 취소 시도된다. 이미 취소완료된 건은 처리되지 않는다.",
-  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
-  async ({ ppno }) => { try { return ok(await cancelPrivatePay({ ppno })); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_private_pay_receipt",
-  "개인결제 건에 현금영수증을 발급한다(운영자). 거래일시(pay_receipt_dt) 기준 48시간 이내만 가능하다.",
-  {
-    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
-    pay_receipt_type: z.number().int().describe("발급용도(1=소득공제, 2=지출증빙)"),
-    pay_receipt_name: z.string().describe("발급 대상 이름(소득공제) 또는 사업자번호 명의"),
-    pay_receipt_num: z.string().describe("휴대폰번호(소득공제) 또는 사업자등록번호(지출증빙)"),
-    pay_receipt_dt: z.string().describe("거래일시 YYYY-MM-DD HH:MM:SS(48시간 이내)"),
-  },
-  async (body) => { try { return ok(await createPrivatePayReceipt(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "cancel_private_pay_receipt",
-  "개인결제 건의 현금영수증을 취소한다(운영자). 발행완료 상태이면서 발행 1년 이내만 가능하다.",
-  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
-  async ({ ppno }) => { try { return ok(await cancelPrivatePayReceipt(ppno)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "list_private_pay_memos",
-  "개인결제 건의 관리 메모 목록을 조회한다(운영자).",
-  { ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)") },
-  async ({ ppno }) => { try { return ok(await listPrivatePayMemos(ppno)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_private_pay_memo",
-  "개인결제 건에 관리 메모를 등록한다(운영자). 작성자는 로그인한 운영자다.",
-  {
-    ppno: z.union([z.number().int(), z.string()]).describe("결제창번호(ppno)"),
-    content: z.string().describe("메모 내용"),
-  },
-  async (body) => { try { return ok(await createPrivatePayMemo(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "delete_private_pay_memo",
-  "개인결제 관리 메모를 삭제한다(운영자).",
-  { id: z.union([z.number().int(), z.string()]).describe("메모 id(list_private_pay_memos 의 items[].id)") },
-  async ({ id }) => { try { return ok(await deletePrivatePayMemo(id)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_exchange_private_pay",
-  "교환 추가비용 개인결제를 발급한다(운영자). 교환(eno) 진행 중 재배송비/회수비/기타 추가비용을 구매자에게 " +
-    "청구할 때 사용한다. ct=21(교환비용)로 발급되고 해당 교환건(exchange.ppno)에 연결되며 결제 안내 메시지가 발송된다. " +
-    "발급된 결제창 정보(data, url)를 사용자에게 안내하라. (보통 update_exchange 로 결제요청 상태(22) 처리와 함께 쓴다)",
-  {
-    eno: z.union([z.number().int(), z.string()]).describe("교환번호(eno)"),
-    price: z.union([z.number().int(), z.string()]).describe("추가 청구금액(원, 0 초과)"),
-    content: z.string().optional().describe("결제 안내 메시지(추가비용 사유 등)"),
-  },
-  async (body) => { try { return ok(await createExchangePrivatePay(body)); } catch (e) { return fail(e.message); } }
-);
-
-server.tool(
-  "create_refund_private_pay",
-  "반품 추가비용 개인결제를 발급한다(운영자, 희박한 유형). 반품(rno) 진행 중 배송비/회수비/기타 추가비용을 " +
-    "구매자에게 청구할 때 사용한다. ct=11(반품비용)로 발급되고 해당 반품건(refund.ppno)에 연결되며 안내 메시지가 발송된다. " +
-    "발급된 결제창 정보(data, url)를 사용자에게 안내하라.",
-  {
-    rno: z.union([z.number().int(), z.string()]).describe("반품번호(rno)"),
-    price: z.union([z.number().int(), z.string()]).describe("추가 청구금액(원, 0 초과)"),
-    content: z.string().optional().describe("결제 안내 메시지(추가비용 사유 등)"),
-  },
-  async (body) => { try { return ok(await createRefundPrivatePay(body)); } catch (e) { return fail(e.message); } }
+    pno: z.union([z.number().int(), z.string()]).optional().describe("결제번호 — get/issue/cancel 대상"),
+    page: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+    period: z.enum(["dt", "pay_dt", "pay_receipt_dt"]).optional().describe("(list) dt=주문/pay_dt=결제/pay_receipt_dt=발행"),
+    period_start: z.string().optional().describe("(list) YYYY-MM-DD(기본 -30일)"),
+    period_end: z.string().optional().describe("(list) YYYY-MM-DD(기본 오늘)"),
+    state: z.enum(["1", "2", "3", "4"]).optional().describe("(list) 발행상태 1=신청안함 2=발행요청 3=발행완료 4=취소완료"),
+    order_state: z.enum(["pay", "cancel", "refund", "exchange"]).optional().describe("(list) 주문상태"),
+    pay_receipt_name: z.string().optional().describe("list 필터 / issue 수신자명·사업자명"),
+    pay_receipt_num: z.string().optional().describe("list 필터 / issue 휴대폰·사업자번호"),
+    name: z.string().optional().describe("(list) 주문자명 필터"),
+    email: z.string().optional().describe("(list) 주문자 이메일 필터"),
+    code: z.enum(["pno", "dno", "pay_receipt_no"]).optional().describe("(list) 번호검색 항목"),
+    codes: z.string().optional().describe("(list) 번호검색 값(콤마/개행)"),
+    pay_receipt_type: z.number().int().optional().describe("(issue) 1=소득공제/휴대폰 2=지출증빙/사업자"),
+    pay_receipt_dt: z.string().optional().describe("(issue) 발행일시 YYYY-MM-DD HH:MM:SS(48h 이내)"),
+  }
 );
 
 // 시작 시 PROSELL_SHOP 이 주어지면 저장(다음 실행부터 생략 가능)

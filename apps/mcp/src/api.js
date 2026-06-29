@@ -321,6 +321,17 @@ export const rejectExchange = (eno) => deleteById("order/exchange", eno, "교환
 /** 클레임(반품/교환) 접수 미리보기 — 주문(ono)의 '상품 기본정보 + 배송비 + 결제정보'를 한 번에 요약.
  *  반품·교환 접수 초기에 사용자에게 대상 상품·배송비·결제내역을 먼저 안내하고, 비용 결정 근거로 쓴다.
  *  왕복 배송비 청구는 보내는(출고) = *_del_price, 회수 = *_ret_price 로 나눠 입력한다. */
+/** 결제수단 코드 → 이름 (Order\OrderState::getPayMethod 와 동일) */
+const PAY_METHODS = {
+  0: "없음", 100: "신용/체크 카드", 101: "카드 수기결제", 110: "휴대폰결제",
+  120: "실시간계좌이체", 130: "가상계좌", 201: "페이코", 202: "토스페이",
+  203: "카카오페이", 204: "네이버 결제형", 205: "네이버 주문형", 206: "제로페이",
+  207: "스마일페이", 208: "애플페이", 209: "위챗페이", 210: "내통장결제",
+  300: "무통장 입금", 500: "해외카드($)", 800: "직접제공", 900: "전액 포인트",
+};
+/** 환불계좌(이체) 필요한 결제수단 — 무통장(300)·가상계좌(130). PG 자동취소 불가 → 수동 계좌환불. */
+const REFUND_ACCOUNT_METHODS = [130, 300];
+
 export async function getClaimPreview(ono) {
   const data = await getOrder(ono, "order,payment,product,delivery");
   const list = Array.isArray(data?.items) ? data.items : [];
@@ -332,6 +343,7 @@ export async function getClaimPreview(ono) {
     payment = {
       pno: p0.pno,                          // 결제번호
       pay_method: p0.pay_method,            // 결제수단 코드
+      pay_method_name: PAY_METHODS[p0.pay_method] ?? String(p0.pay_method),
       pay_currency: p0.pay_currency,
       pay_price: p0.pay_price,              // 총 결제금액
       pay_point_price: p0.pay_point_price,  // 사용 포인트
@@ -339,6 +351,18 @@ export async function getClaimPreview(ono) {
       pay_dt: p0.pay_dt,                    // 결제일시
     };
   }
+
+  // 환불계좌 안내(무통장/가상계좌면 계좌이체 환불 필요). 주문에 등록된 환불계좌가 있으면 함께 노출.
+  const o0 = list.find((it) => it?.order)?.order;
+  const needsAccount = REFUND_ACCOUNT_METHODS.includes(Number(p0?.pay_method));
+  const refund_account = {
+    needs_account: needsAccount,            // true 면 환불계좌 정보를 받아 ref_bank_* 로 입력해야 함
+    reason: needsAccount ? `${payment?.pay_method_name} 결제 — PG 자동취소 불가, 계좌이체 환불 필요` : null,
+    bank_code: o0?.refund_bank_code || null,
+    bank_title: o0?.refund_bank_title || null,
+    bank_num: o0?.refund_bank_num || null,
+    bank_holder: o0?.refund_bank_holder || null,
+  };
 
   // 배송그룹(dno)별 배송비 + 대상 상품 목록
   const groups = new Map();
@@ -379,10 +403,14 @@ export async function getClaimPreview(ono) {
   return {
     ono,
     payment,
+    refund_account,
     groups: [...groups.values()],
     guide:
       "반품/교환 접수 초기: 위 상품(groups[].items)·배송비(groups[].shipping.paid_delivery_price)·결제정보(payment)를 " +
-      "먼저 사용자에게 안내한 뒤 비용을 결정하라. 왕복 배송비는 보내는(출고)=*_del_price, 회수=*_ret_price 로 나눠 입력. " +
+      "먼저 사용자에게 안내한 뒤 비용을 결정하라. " +
+      "refund_account.needs_account=true(무통장·가상계좌)면 환불계좌(은행·계좌번호·예금주)를 반드시 안내·확인하고 " +
+      "create/update_refund 의 ref_bank_code/ref_bank_num/ref_bank_holder 로 입력하라(주문에 등록된 계좌가 있으면 refund_account 에 표시됨). " +
+      "왕복 배송비는 보내는(출고)=*_del_price, 회수=*_ret_price 로 나눠 입력. " +
       "반품은 음수=구매자 부담(환불액 차감), 교환은 0 이상 양수(구매자 청구).",
   };
 }

@@ -72,7 +72,7 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.13.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.14.0" });
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -516,7 +516,9 @@ server.tool(
     "비용(배송비/회수비/기타)을 청구·부담시키려면 ref_del_price/ref_ret_price/ref_deduct_price 를 넣는다. " +
     "★비용 부호 규칙: **음수=구매자 부담(환불액에서 차감), 0 이상=판매자 부담**. " +
     "판단 근거(구매자가 낸 배송비 등)는 get_claim_preview 또는 list_refunds 의 paymentInfo 로 확인하고, " +
-    "판매자가 최종 결정한 금액을 넣는다.",
+    "판매자가 최종 결정한 금액을 넣는다. " +
+    "★무통장·가상계좌 결제건(get_claim_preview.refund_account.needs_account=true)은 PG 자동취소가 안 되므로 " +
+    "환불계좌(ref_bank_code/ref_bank_num/ref_bank_holder)를 사용자에게 안내·확인해 함께 입력하라.",
   {
     ono: z.union([z.number().int(), z.string()]).describe("주문서 유니크키(ono)"),
     items: claimItems.describe("반품할 상품 목록"),
@@ -525,15 +527,21 @@ server.tool(
     ref_del_price: z.number().int().optional().describe("상품 배송비용 — 음수=구매자 부담, 0이상=판매자 부담(무료배송 상품에 배송비 청구 시 입력)"),
     ref_ret_price: z.number().int().optional().describe("상품 회수비용 — 음수=구매자 부담, 0이상=판매자 부담"),
     ref_deduct_price: z.number().int().optional().describe("기타비용 — 음수=구매자 부담, 0이상=판매자 부담"),
+    ref_bank_code: z.string().optional().describe("(무통장·가상계좌 환불) 은행코드 — get_claim_preview.refund_account 로 확인/안내"),
+    ref_bank_num: z.string().optional().describe("(무통장·가상계좌 환불) 환불 계좌번호"),
+    ref_bank_holder: z.string().optional().describe("(무통장·가상계좌 환불) 예금주"),
   },
-  async ({ ono, items, ref_ct, ref_content, ref_del_price, ref_ret_price, ref_deduct_price }) => {
-    // 백엔드 규격: 사유는 refund 객체, 비용은 paymentInfo 객체로 중첩.
+  async ({ ono, items, ref_ct, ref_content, ref_del_price, ref_ret_price, ref_deduct_price, ref_bank_code, ref_bank_num, ref_bank_holder }) => {
+    // 백엔드 규격: 사유는 refund 객체, 비용·환불계좌는 paymentInfo 객체로 중첩.
     const refund = { ref_ct };
     if (ref_content !== undefined) refund.ref_content = ref_content;
     const paymentInfo = {};
     if (ref_del_price !== undefined) paymentInfo.ref_del_price = ref_del_price;
     if (ref_ret_price !== undefined) paymentInfo.ref_ret_price = ref_ret_price;
     if (ref_deduct_price !== undefined) paymentInfo.ref_deduct_price = ref_deduct_price;
+    if (ref_bank_code !== undefined) paymentInfo.ref_bank_code = ref_bank_code;
+    if (ref_bank_num !== undefined) paymentInfo.ref_bank_num = ref_bank_num;
+    if (ref_bank_holder !== undefined) paymentInfo.ref_bank_holder = ref_bank_holder;
     const body = { ono, items, refund };
     if (Object.keys(paymentInfo).length) body.paymentInfo = paymentInfo;
     try { return ok(await createRefund(body)); } catch (e) { return fail(e.message); }
@@ -558,16 +566,22 @@ server.tool(
     ref_del_price: z.number().int().optional().describe("상품 배송비용 — 음수=구매자 부담, 0이상=판매자 부담"),
     ref_ret_price: z.number().int().optional().describe("상품 회수비용 — 음수=구매자 부담, 0이상=판매자 부담"),
     ref_deduct_price: z.number().int().optional().describe("기타비용 — 음수=구매자 부담, 0이상=판매자 부담"),
+    ref_bank_code: z.string().optional().describe("(무통장·가상계좌 환불) 은행코드 — get_claim_preview.refund_account 로 확인/안내"),
+    ref_bank_num: z.string().optional().describe("(무통장·가상계좌 환불) 환불 계좌번호"),
+    ref_bank_holder: z.string().optional().describe("(무통장·가상계좌 환불) 예금주"),
     addressInfo: z.record(z.any()).optional().describe("회수지·회수 운송장 등(ref_ret_parcel/ref_ret_num/ref_ret_zipcode/ref_ret_addr1...)"),
   },
-  async ({ rno, addressInfo, ref_del_price, ref_ret_price, ref_deduct_price, ...refund }) => {
+  async ({ rno, addressInfo, ref_del_price, ref_ret_price, ref_deduct_price, ref_bank_code, ref_bank_num, ref_bank_holder, ...refund }) => {
     try {
-      // refund(사유/상태/이름) · paymentInfo(비용) · addressInfo(회수지) 로 분리 중첩
+      // refund(사유/상태/이름) · paymentInfo(비용·환불계좌) · addressInfo(회수지) 로 분리 중첩
       const body = { refund };
       const paymentInfo = {};
       if (ref_del_price !== undefined) paymentInfo.ref_del_price = ref_del_price;
       if (ref_ret_price !== undefined) paymentInfo.ref_ret_price = ref_ret_price;
       if (ref_deduct_price !== undefined) paymentInfo.ref_deduct_price = ref_deduct_price;
+      if (ref_bank_code !== undefined) paymentInfo.ref_bank_code = ref_bank_code;
+      if (ref_bank_num !== undefined) paymentInfo.ref_bank_num = ref_bank_num;
+      if (ref_bank_holder !== undefined) paymentInfo.ref_bank_holder = ref_bank_holder;
       if (Object.keys(paymentInfo).length) body.paymentInfo = paymentInfo;
       if (addressInfo) body.addressInfo = addressInfo;
       return ok(await updateRefund(rno, body));
@@ -684,7 +698,9 @@ server.tool(
   "반품/교환 접수 초기 안내용(운영자). 주문(ono)의 **대상 상품 기본정보 + 배송비 + 결제정보**를 한 번에 요약한다. " +
     "반환: payment(결제정보 — 결제번호/결제수단/총 결제금액/포인트/결제일), " +
     "groups[].items(상품 — prno/상품명/옵션/수량/단가/주문상태), " +
-    "groups[].shipping(배송 — paid_delivery_price=구매 시 결제 배송비/선착불/무료배송기준/배송원가). " +
+    "groups[].shipping(배송 — paid_delivery_price=구매 시 결제 배송비/선착불/무료배송기준/배송원가), " +
+    "refund_account(환불계좌 — needs_account=true면 무통장·가상계좌라 PG 자동취소 불가 → 환불계좌 안내·입력 필요, " +
+    "주문에 등록된 bank_code/bank_num/bank_holder 가 있으면 함께 표시). " +
     "반품·교환 접수 시작 시 이 내용을 먼저 사용자에게 안내한 뒤, 왕복 배송비(보내는+회수)를 결정하라 " +
     "(보내는=*_del_price, 회수=*_ret_price; 반품은 음수=구매자 부담, 교환은 0이상 양수=구매자 청구). " +
     "그 뒤 create/update_refund·exchange 로 반영한다.",

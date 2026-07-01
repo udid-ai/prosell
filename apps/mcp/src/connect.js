@@ -97,9 +97,12 @@ function isWSL() {
 
 function tryOpenBrowser(url) {
   let cmd, args;
+  // PowerShell 작은따옴표 문자열 — URL 의 & 를 안전하게 감싼다(cmd 의 start 는 따옴표 없으면 & 를
+  // 명령 구분자로 해석해 redirect_uri 이후가 잘림. win32 도 WSL 과 동일하게 Start-Process 사용).
+  const psUrl = `'${String(url).replace(/'/g, "''")}'`;
   if (process.platform === "darwin") { cmd = "open"; args = [url]; }
-  else if (process.platform === "win32") { cmd = "cmd"; args = ["/c", "start", "", url]; }
-  else if (isWSL()) { cmd = "powershell.exe"; args = ["-NoProfile", "-Command", "Start-Process", `'${url}'`]; }
+  else if (process.platform === "win32") { cmd = "powershell.exe"; args = ["-NoProfile", "-Command", "Start-Process", psUrl]; }
+  else if (isWSL()) { cmd = "powershell.exe"; args = ["-NoProfile", "-Command", "Start-Process", psUrl]; }
   else { cmd = "xdg-open"; args = [url]; }
   try {
     // ENOENT 는 비동기 'error' 이벤트 → 핸들러로 흡수(미처리 시 프로세스 크래시).

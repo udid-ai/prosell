@@ -22,6 +22,7 @@ import {
   getClaimReasons, updateClaimReasons,
   listCouriers, createCourier, updateCourier, deleteCourier,
   createProduct, updateProduct, deleteProduct, getProductOption, uploadProductImages,
+  salesByPeriod, salesByProduct,
   listCategories, createCategory, updateCategory, deleteCategory,
   listSuppliers, createSupplier, updateSupplier, deleteSupplier,
   listBrands, createBrand, updateBrand, deleteBrand, uploadBrandImage, deleteBrandImage,
@@ -80,7 +81,7 @@ async function specFile(rel) {
 // 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
 // stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
 export function buildServer() {
-const server = new McpServer({ name: "prosell-mcp", version: "0.25.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.26.0" });
 
 // 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
 // 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
@@ -141,7 +142,9 @@ server.tool(
 
 if (!REMOTE) server.tool(
   "connect",
-  "운영자 동의로 OAuth 앱을 자동 등록하고 자격증명을 받아 저장한다. 브라우저가 열리며, 운영자가 어드민 로그인 후 동의하면 완료. (복사·붙여넣기 불필요)",
+  "운영자 동의로 OAuth 앱을 자동 등록하고 자격증명을 받아 저장한다. 브라우저가 열리며, 운영자가 어드민 로그인 후 동의하면 완료. (복사·붙여넣기 불필요) " +
+    "⚠️반드시 이 도구를 실행하라. `/adm/apps/connect` URL 을 직접 만들어 열지 마라 — redirect_uri 가 빠져 '허용되지 않는 redirect_uri' 로 거부된다. " +
+    "브라우저가 자동으로 안 열리면(예: Claude Code 환경) 이 도구가 반환/에러로 알려주는 전체 URL 을 그대로(파라미터 변경 없이) 열어라.",
   {
     app_name: z.string().optional().describe("동의 화면에 표시할 도구 이름"),
     app_redirect_uri: z.string().optional().describe("스토어프론트 OAuth 콜백(등록될 값). 기본 http://localhost:3000/auth/callback"),
@@ -197,7 +200,8 @@ server.tool(
 // (원격 게이트웨이는 커넥터 OAuth 로 토큰이 주입되므로 login 을 노출하지 않는다.)
 if (!REMOTE) server.tool(
   "login",
-  "운영자로 로그인해 주문 관리용 토큰을 발급한다. 브라우저가 열리며, 운영자가 로그인/동의하면 완료. (connect 로 앱 연결을 먼저 끝내야 함)",
+  "운영자로 로그인해 주문 관리용 토큰을 발급한다. 브라우저가 열리며, 운영자가 로그인/동의하면 완료. (connect 로 앱 연결을 먼저 끝내야 함) " +
+    "⚠️URL 을 직접 만들지 말고 이 도구를 실행하라. 브라우저가 자동으로 안 열리면 이 도구가 알려주는 전체 주소를 그대로 열어라.",
   {
     scope: z.string().optional().describe("OAuth scope (기본 user)"),
   },
@@ -858,7 +862,8 @@ server.tool(
     "product(주문옵션 행 배열 — 옵션 조합별 price/quantity/code 등; 단일상품도 1행), " +
     "delivery(배송), request(요청사항), content(상세내용 — file_photo=대표이미지 id 등), benefit(혜택). " +
     "이미지는 먼저 upload_product_images 로 올려 받은 id 를 content.file_photo 등에 넣는다. " +
-    "★배송비를 받으려면 delivery 객체를 반드시 함께 보낸다(생략하면 배송비 미설정). " +
+    "★배송/택배: delivery 객체를 함께 보내면 그 설정으로 등록된다. delivery 를 생략하면(사용자가 배송/택배를 언급하지 않으면) " +
+    "가장 최근 등록한 상품의 배송설정을 그대로 상속한다(최초 상품이라 상속할 게 없으면 배송 미설정). " +
     "delivery.parcel_type 이 마스터 스위치다: 10/11/12=무료(이때 배송비는 강제로 0), 21/22=조건부무료, " +
     "31=유료(선불) · 32=유료(착불) · 33=고객선택. **유료 배송비는 parcel_type=31(또는 32) + parcel_basic_price 를 함께** 넣어야 적용된다. " +
     "★ID 용어(응답 보고 시 정확히): 최상위 `id` = **상품번호**(get_product/update_product/delete_product 에 쓰는 값). " +
@@ -925,6 +930,34 @@ server.tool(
   { id: z.union([z.number().int(), z.string()]).describe("주문옵션 유니크키(옵션 행 id)") },
   async ({ id }) => {
     try { return ok(await getProductOption(id)); } catch (e) { return fail(e.message); }
+  }
+);
+
+server.tool(
+  "sales_stats",
+  "매출 통계 조회(운영자, 조회 전용). 관리자 매출통계와 동일 집계다. " +
+    "action=period → 기간·결제수단별(일자별 daily + 결제수단별 pay_methods + 합계 summary). " +
+    "action=product → 상품별 판매(products: 상품명/수량/판매액, 합계 포함). " +
+    "★기간(period_start~period_end, YYYY-MM-DD)은 최대 3개월. 사용자가 '오늘/어제/이번 달/지난주' 처럼 말하면 " +
+    "오늘 날짜 기준으로 실제 날짜 범위(예: 오늘=오늘~오늘, 이번 달=1일~오늘)로 변환해 넣어라. " +
+    "판매액은 pay_price(실결제액)/item_price(판매가 합계) 등으로 제공되며 text 필드에 '1,234 원' 형태 문자열도 있다.",
+  {
+    action: z.enum(["period", "product"]).describe("period=기간·수단별 매출 / product=상품별 매출"),
+    period_start: z.string().describe("조회 시작일 YYYY-MM-DD"),
+    period_end: z.string().describe("조회 종료일 YYYY-MM-DD (시작~종료 최대 3개월)"),
+    state: z.number().int().optional().describe("주문상태 필터(2=결제완료 3=상품준비중 4=배송중 5=배송완료 6=구매확정 8=발송지연)"),
+    pay_method: z.string().optional().describe("(period) 결제수단 코드 필터. 999=전자결제(무통장제외), 300=무통장 등"),
+    sort_type: z.number().int().min(0).max(1).optional().describe("(product) 0=옵션별 1=상품별 집계"),
+    orderby_type: z.number().int().min(0).max(5).optional().describe("(product) 정렬 0=매출↓ 1=매출↑ 2=이름↑ 3=이름↓ 4=수량↓ 5=수량↑"),
+    search_products_title: z.string().optional().describe("(product) 상품명 부분검색"),
+  },
+  async ({ action, period_start, period_end, state, pay_method, sort_type, orderby_type, search_products_title }) => {
+    try {
+      if (action === "product") {
+        return ok(await salesByProduct({ period_start, period_end, state, sort_type, orderby_type, search_products_title }));
+      }
+      return ok(await salesByPeriod({ period_start, period_end, state, pay_method }));
+    } catch (e) { return fail(e.message); }
   }
 );
 

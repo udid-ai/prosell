@@ -500,9 +500,58 @@ async function uploadFiles(path, fields, filePaths, fallback) {
 }
 
 // 상품(관리) — 조회는 기존 listProducts/getProduct(client). 등록·수정·삭제는 운영자.
-export const createProduct = (body) => postJson("products", body, "상품 등록 실패");
+/** delivery 객체에 실제 설정이 들어있는지(빈 객체·falsy 는 미지정으로 간주) */
+function hasDeliverySettings(d) {
+  return !!d && typeof d === "object" && !Array.isArray(d) && Object.keys(d).length > 0;
+}
+
+/** 최근 등록 상품(id DESC 1건)의 배송설정을 반환. 없으면 null.
+ *  delivery expand 의 필드명이 create_product 의 delivery 입력과 동일하므로 그대로 되먹임 가능. */
+async function recentProductDelivery() {
+  const list = await listProducts({ order: 0, limit: 1, expand: "origin" }); // order=0 → 최신 상품 먼저
+  const id = Array.isArray(list?.items) ? list.items[0]?.id : null;
+  if (!id) return null;
+  const detail = await getProduct(id, "delivery");
+  const delivery = detail?.data?.delivery;
+  return hasDeliverySettings(delivery) ? delivery : null;
+}
+
+/** 상품 등록. delivery(배송/택배)를 명시하지 않으면 최근 등록 상품의 배송설정을 그대로 상속한다.
+ *  (사용자가 택배·배송을 언급하지 않으면 직전 상품과 동일하게 등록되도록) */
+export async function createProduct(body = {}) {
+  const b = { ...body };
+  if (!hasDeliverySettings(b.delivery)) {
+    try {
+      const inherited = await recentProductDelivery();
+      if (inherited) b.delivery = inherited;
+    } catch { /* 상속 조회 실패는 무시하고 기존 동작(배송 미설정)으로 진행 */ }
+  }
+  return postJson("products", b, "상품 등록 실패");
+}
 export const updateProduct = (id, body) => putById("products", id, body, "상품 수정 실패");
 export const deleteProduct = (id) => deleteById("products", id, "상품 삭제 실패");
+
+// ── 매출 통계(운영자, 조회 전용) ────────────────────────────────────────────
+// 관리자 매출통계와 동일 집계. 기간 최대 3개월. period_start/period_end = YYYY-MM-DD.
+/** 기간·결제수단별 매출 — GET /stat/period. daily(일자별)+pay_methods(수단별)+summary(합계). */
+export async function salesByPeriod(params = {}) {
+  const u = new URL(`${apiBase()}/stat/period`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
+  }
+  const res = await fetch(u, { headers: await bearerHeaders() });
+  return jsonOrThrow(res, "매출 통계(기간) 조회 실패");
+}
+/** 상품별 매출 — GET /stat/prodsale. products(상품별 수량·판매액)+합계. */
+export async function salesByProduct(params = {}) {
+  const u = new URL(`${apiBase()}/stat/prodsale`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
+  }
+  const res = await fetch(u, { headers: await bearerHeaders() });
+  return jsonOrThrow(res, "매출 통계(상품별) 조회 실패");
+}
+
 /** 주문옵션 상세 — GET /products/options/{id}. 옵션 유니크키로 단건 조회. */
 export const getProductOption = (id) => getClient(`products/options/${encodeURIComponent(id)}`, {}, "주문옵션 조회 실패");
 /** 상품 이미지 업로드 — POST /products/images (multipart). field=대상(file_photo 등).

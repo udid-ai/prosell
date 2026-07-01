@@ -21,6 +21,7 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
   // 기본은 create-prosell-app 의 콜백 규약. 환경변수로 재정의 가능.
   const appRedirect = app_redirect_uri || process.env.PROSELL_APP_REDIRECT_URI || "http://localhost:3000/auth/callback";
 
+  let consentUrl = ""; // listen 후 채워짐 — 실패/타임아웃 시 결과로 노출(브라우저 자동열기 실패 대비)
   return await new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
@@ -54,7 +55,10 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
 
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error("연결 시간 초과(5분). 다시 시도하세요."));
+      reject(new Error(
+        "연결 시간 초과(5분). 브라우저가 자동으로 열리지 않았을 수 있습니다. " +
+        (consentUrl ? `아래 전체 주소를 브라우저에서 직접 여세요(주소를 임의로 바꾸지 마세요):\n${consentUrl}` : "다시 시도하세요.")
+      ));
     }, TIMEOUT_MS);
 
     function cleanup() {
@@ -71,9 +75,10 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
       consent.searchParams.set("app_redirect_uri", appRedirect);  // 등록될 OAuth 콜백
       consent.searchParams.set("state", state);
 
-      tryOpenBrowser(consent.toString());
-      // URL 은 호출한 AI/이용자에게도 보여주기 위해 stderr 로 안내
-      process.stderr.write(`\n[prosell-mcp] 운영자 동의 페이지를 여세요:\n${consent.toString()}\n\n`);
+      consentUrl = consent.toString();
+      tryOpenBrowser(consentUrl);
+      // URL 은 호출한 AI/이용자에게도 보여주기 위해 stderr 로 안내(실패 시 결과 메시지에도 포함)
+      process.stderr.write(`\n[prosell-mcp] 운영자 동의 페이지를 여세요:\n${consentUrl}\n\n`);
     });
 
     server.on("error", reject);

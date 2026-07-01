@@ -4,14 +4,14 @@ import { NextRequest, NextResponse } from "next/server";
 const AT = "pa_at";
 const RT = "pa_rt";
 // 선제 갱신 skew(lib/prosell.ts AT_SKEW 와 동일) — AT 쿠키를 실제 만료보다 5분 일찍 죽인다.
-// next/headers 를 import 하는 prosell.ts 는 미들웨어(edge)에서 못 쓰므로 값만 인라인.
+// next/headers 를 import 하는 prosell.ts 는 proxy(edge)에서 못 쓰므로 값만 인라인.
 const AT_SKEW = 300;
 
-// 액세스 토큰(쿠키) 자동 갱신 미들웨어.
+// 액세스 토큰(쿠키) 자동 갱신 proxy(구 middleware — Next 16에서 규칙명이 proxy 로 바뀜).
 // AT 쿠키 maxAge = expires_in - AT_SKEW(5분)이라, 실제 토큰이 죽기 5분 전에 브라우저가 삭제한다.
 // → AT 쿠키가 없고 RT 쿠키만 있으면(=만료 임박/만료) refresh_token 으로 선제 재발급한다.
 // 백엔드: POST /api/v2/oauth/token (grant_type=refresh_token, form-encoded, client_secret 필요).
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const at = req.cookies.get(AT)?.value;
   const rt = req.cookies.get(RT)?.value;
 

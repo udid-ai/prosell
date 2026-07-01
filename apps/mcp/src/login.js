@@ -30,6 +30,7 @@ export async function runLogin({ scope = "user" } = {}) {
   // 고정 redirect_uri 재정의 시: 그 호스트/포트로 수신해야 한다.
   const fixed = process.env.PROSELL_LOGIN_REDIRECT_URI;
 
+  let authorizeUrl = ""; // listen 후 채워짐 — 실패/타임아웃 시 결과로 노출(브라우저 자동열기 실패 대비)
   return await new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
@@ -63,7 +64,10 @@ export async function runLogin({ scope = "user" } = {}) {
 
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error("로그인 시간 초과(5분). 다시 시도하세요."));
+      reject(new Error(
+        "로그인 시간 초과(5분). 브라우저가 자동으로 열리지 않았을 수 있습니다. " +
+        (authorizeUrl ? `아래 전체 주소를 브라우저에서 직접 여세요(주소를 임의로 바꾸지 마세요):\n${authorizeUrl}` : "다시 시도하세요.")
+      ));
     }, TIMEOUT_MS);
 
     function cleanup() {
@@ -83,8 +87,9 @@ export async function runLogin({ scope = "user" } = {}) {
       authorize.searchParams.set("scope", scope);
       authorize.searchParams.set("state", state);
 
-      tryOpenBrowser(authorize.toString());
-      process.stderr.write(`\n[prosell-mcp] 운영자 로그인 페이지를 여세요:\n${authorize.toString()}\n\n`);
+      authorizeUrl = authorize.toString();
+      tryOpenBrowser(authorizeUrl);
+      process.stderr.write(`\n[prosell-mcp] 운영자 로그인 페이지를 여세요:\n${authorizeUrl}\n\n`);
     });
 
     server.on("error", reject);

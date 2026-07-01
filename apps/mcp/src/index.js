@@ -77,7 +77,15 @@ async function specFile(rel) {
   }
 }
 
-const server = new McpServer({ name: "prosell-mcp", version: "0.21.0" });
+// 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
+// stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
+export function buildServer() {
+const server = new McpServer({ name: "prosell-mcp", version: "0.23.0" });
+
+// 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
+// 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
+// 무한 대기하게 되므로 노출하지 않는다. status 도 컨텍스트 토큰 기준으로 표시한다.
+const REMOTE = process.env.PROSELL_MCP_HTTP === "1";
 
 // ── Resources: 계약(병합 OpenAPI) + 가이드 — guide 가 서빙하는 정적 파일 ──────
 const RESOURCES = [
@@ -96,14 +104,29 @@ const fail = (msg) => ({ isError: true, content: [{ type: "text", text: String(m
 
 server.tool(
   "status",
-  "현재 연결 상태(쇼핑몰 URL, 자격증명 발급 여부)를 확인한다.",
+  "현재 연결 상태(쇼핑몰 URL, 인증 여부)를 확인한다.",
   {},
   async () => {
     try {
-      const creds = credentials();
       const tok = tokens();
+      if (REMOTE) {
+        // 원격: 인증은 커넥터 OAuth 로 처리됨. 토큰 유무가 곧 연결 여부다(connect/login 불필요).
+        return ok({
+          shop: shopBase(),
+          mode: "remote",
+          connected: !!tok,
+          logged_in: !!tok,
+          note: tok
+            ? "커넥터 OAuth 로 인증됨 — connect/login 은 필요 없습니다. 관리 도구를 바로 사용하세요."
+            : "운영자 토큰이 없습니다. 커넥터를 다시 연결(재인증)하세요.",
+          list_expand: LIST_EXPAND,
+          detail_expand: DETAIL_EXPAND,
+        });
+      }
+      const creds = credentials();
       return ok({
         shop: shopBase(),
+        mode: "local",
         connected: !!creds,            // connect 로 앱 자격증명 발급됨
         client_id: creds?.client_id ?? null,
         logged_in: !!tok,              // login 으로 운영자 토큰 보유(주문 관리 가능)
@@ -116,7 +139,7 @@ server.tool(
   }
 );
 
-server.tool(
+if (!REMOTE) server.tool(
   "connect",
   "운영자 동의로 OAuth 앱을 자동 등록하고 자격증명을 받아 저장한다. 브라우저가 열리며, 운영자가 어드민 로그인 후 동의하면 완료. (복사·붙여넣기 불필요)",
   {
@@ -169,8 +192,9 @@ server.tool(
   }
 );
 
-// ── 주문 관리(운영자) — Bearer 토큰 필요(먼저 login) ─────────────────────────
-server.tool(
+// ── 주문 관리(운영자) — Bearer 토큰 필요 ─────────────────────────────────────
+// (원격 게이트웨이는 커넥터 OAuth 로 토큰이 주입되므로 login 을 노출하지 않는다.)
+if (!REMOTE) server.tool(
   "login",
   "운영자로 로그인해 주문 관리용 토큰을 발급한다. 브라우저가 열리며, 운영자가 로그인/동의하면 완료. (connect 로 앱 연결을 먼저 끝내야 함)",
   {
@@ -900,39 +924,72 @@ server.tool(
   }
 );
 
-server.tool(
-  "upload_product_images",
-  "상품 이미지를 업로드해 **파일 유니크키(items[].id)** 를 받는다(운영자). 받은 id 를 create_product/update_product 의 " +
-    "content.file_photo(대표·단일)·file_list(최대2,콤마)·file_gallery(최대10,콤마)·pc/m_description_photo(콤마) 등, " +
-    "또는 주문옵션 이미지는 field=photo 로 올려 product[].photo 에 넣어 연결한다.\n" +
-    "★입력 방식 2가지(합쳐 최대 10):\n" +
-    "  • images: [{data(base64), name}] — **이 방식을 우선 사용**. 사용자가 채팅에 첨부한 이미지나 " +
-    "지정한 윈도우 로컬 폴더의 파일을 에이전트가 읽어 base64 로 인코딩해 넣는다(파일명은 name). " +
-    "MCP 서버가 외부(원격/IDC)에 있어도 바이트가 전달되어 업로드된다.\n" +
-    "  • files: [로컬경로] — **MCP 서버가 그 경로의 파일을 직접 읽을 수 있을 때만**(로컬 stdio 배포). " +
-    "원격 MCP 면 사용자 로컬 PC 경로를 읽지 못하므로 쓰지 말 것.\n" +
-    "둘 다 어려우면 로컬에서 백엔드로 직접 multipart 업로드(curl/Postman) 후 id 만 받아 상품 등록/수정에 써도 된다.",
-  {
-    field: z.enum([
-      "file_photo", "file_list", "file_gallery",
-      "pc_description_photo", "m_description_photo",
-      "pc_information_photo", "m_information_photo",
-      "pc_delivery_photo", "m_delivery_photo",
-      "pc_return_photo", "m_return_photo",
-      "pc_as_photo", "m_as_photo",
-      "pc_header_photo", "m_header_photo",
-      "productsupload", "photo", "detail_photo", "detail_photo_m",
-    ]).describe("대상 필드 — file_photo(대표) / file_list / file_gallery / pc_description_photo(상세) / photo(주문옵션) 등"),
-    images: z.array(z.object({
-      data: z.string().describe("이미지 바이트를 base64 로 인코딩한 문자열(data:...;base64, 접두어 있어도 됨)"),
-      name: z.string().optional().describe("파일명(확장자 포함, 예: 1.png)"),
-    })).max(10).optional().describe("이미지 바이트(base64) 목록 — 채팅 첨부/로컬 폴더 파일을 에이전트가 읽어 전달(원격 MCP 권장)"),
-    files: z.array(z.string()).max(10).optional().describe("로컬 파일 경로 목록 — MCP 서버가 직접 읽을 수 있을 때만(로컬 stdio 배포)"),
-  },
-  async ({ field, images, files }) => {
-    try { return ok(await uploadProductImages(field, { images, files })); } catch (e) { return fail(e.message); }
-  }
-);
+const IMAGE_FIELD = z.enum([
+  "file_photo", "file_list", "file_gallery",
+  "pc_description_photo", "m_description_photo",
+  "pc_information_photo", "m_information_photo",
+  "pc_delivery_photo", "m_delivery_photo",
+  "pc_return_photo", "m_return_photo",
+  "pc_as_photo", "m_as_photo",
+  "pc_header_photo", "m_header_photo",
+  "productsupload", "photo", "detail_photo", "detail_photo_m",
+]).describe("대상 필드 — file_photo(대표) / file_list / file_gallery / pc_description_photo(상세) / photo(주문옵션) 등");
+
+if (REMOTE) {
+  // 커넥터형(원격): 두 가지 입력을 받는다.
+  //   · image_urls — 공개 URL(Chat 모드 등 로컬 파일 접근 불가 환경). 서버가 받아 검증·업로드.
+  //   · images(base64) — 호출자가 **실제 파일 바이트**를 가진 경우(예: Claude Desktop "Code" 모드가
+  //     로컬 사진을 읽어 전달). 매직바이트(JPEG/PNG/GIF)+최소크기 검증으로 가짜/깨짐은 거부.
+  // (files[로컬경로]는 원격 서버가 사용자 PC 를 못 읽으므로 미지원 — Code 모드는 파일을 읽어 base64 로 전달)
+  server.tool(
+    "upload_product_images",
+    "상품 이미지를 업로드해 파일 유니크키(items[].id)를 받는다(운영자/원격 커넥터). 받은 id 를 create_product/update_product 의 " +
+      "content.file_photo(대표)·file_list·file_gallery·pc/m_description_photo 또는 주문옵션 product[].photo 에 연결. 합쳐 최대 10.\n" +
+      "입력 두 가지:\n" +
+      "  • image_urls: 공개 http/https 이미지 주소 → 서버가 받아 검증(JPEG/PNG/GIF) 후 업로드. (Chat 모드 권장)\n" +
+      "  • images:[{data(base64), name}]: **실제 파일 바이트**의 base64.\n" +
+      "★로컬 파일(예: C:\\\\Users\\\\..\\\\1.png)을 올리려면 — 이 도구를 그대로 쓴다: " +
+      "파일을 **직접 읽어** 바이트를 base64 로 인코딩해 images 에 넣어 호출하라. Claude Desktop 'Code' 모드는 로컬 파일을 읽을 수 있다. " +
+      "**인증 토큰을 따로 구할 필요 없다 — 커넥터가 자동 인증한다.** curl/PowerShell 로 직접 업로드하려 하지 마라" +
+      "(OAuth 액세스 토큰은 의도적으로 노출되지 않으며, 설정파일에도 없다). 큰 파일(수백 KB↑)이라 base64 가 부담되면 image_urls(공개 URL)로.\n" +
+      "★Chat 모드/채팅에 끌어다 놓은 첨부는 모델이 'vision'만 받아 실제 바이트가 없다 → base64 가 가짜가 되어 거부된다. 그 경우 image_urls 를 쓰거나 'Code' 모드에서 로컬 파일을 읽어 올려라.",
+    {
+      field: IMAGE_FIELD,
+      image_urls: z.array(z.string().url()).max(10).optional().describe("공개 이미지 URL 목록(http/https)"),
+      images: z.array(z.object({
+        data: z.string().describe("이미지 바이트의 base64(data:...;base64, 접두어 허용). Code 모드가 로컬 파일을 읽어 전달"),
+        name: z.string().optional().describe("파일명(확장자 포함, 예: 1.png)"),
+      })).max(10).optional().describe("실제 파일 바이트의 base64 목록(채팅 첨부 vision 은 불가)"),
+    },
+    async ({ field, image_urls, images }) => {
+      try { return ok(await uploadProductImages(field, { urls: image_urls, images })); } catch (e) { return fail(e.message); }
+    }
+  );
+} else {
+  // 설치형(로컬 stdio): 로컬 파일 경로(files)가 가장 확실. URL/실바이트 base64 도 허용.
+  server.tool(
+    "upload_product_images",
+    "상품 이미지를 업로드해 **파일 유니크키(items[].id)** 를 받는다(운영자, 로컬 설치형). 받은 id 를 create_product/update_product 의 " +
+      "content.file_photo(대표·단일)·file_list(최대2,콤마)·file_gallery(최대10,콤마)·pc/m_description_photo(콤마) 등, " +
+      "또는 주문옵션 이미지는 field=photo 로 올려 product[].photo 에 넣어 연결한다. (합쳐 최대 10)\n" +
+      "★권장: files:[로컬경로] — 로컬 서버가 파일 바이트를 직접 읽어 업로드(가장 확실).\n" +
+      "  • image_urls:[공개 URL] — 서버가 받아 검증 후 업로드.\n" +
+      "  • images:[{data(base64), name}] 는 호출자가 **실제 파일 바이트**를 base64 로 가진 경우에만(채팅 첨부는 vision 이라 바이트 없음→금지). " +
+      "디코드 결과가 JPEG/PNG/GIF 가 아니거나 너무 작으면 업로드를 거부한다.",
+    {
+      field: IMAGE_FIELD,
+      files: z.array(z.string()).max(10).optional().describe("로컬 파일 경로 목록 — 서버가 직접 읽음(권장)"),
+      image_urls: z.array(z.string().url()).max(10).optional().describe("공개 이미지 URL 목록(http/https)"),
+      images: z.array(z.object({
+        data: z.string().describe("이미지 바이트를 base64 로 인코딩한 문자열(data:...;base64, 접두어 허용)"),
+        name: z.string().optional().describe("파일명(확장자 포함, 예: 1.png)"),
+      })).max(10).optional().describe("실제 파일 바이트의 base64 목록(채팅 첨부 vision 은 불가). 잘못된 이미지는 거부됨"),
+    },
+    async ({ field, images, files, image_urls }) => {
+      try { return ok(await uploadProductImages(field, { images, files, urls: image_urls })); } catch (e) { return fail(e.message); }
+    }
+  );
+}
 
 // ── 카테고리 ────────────────────────────────────────────────────────────────
 const listParams = {
@@ -1684,11 +1741,19 @@ crudTool(
   }
 );
 
-// 시작 시 PROSELL_SHOP 이 주어지면 저장(다음 실행부터 생략 가능)
-if (process.env.PROSELL_SHOP) {
-  try { saveShop(process.env.PROSELL_SHOP); } catch {}
+  return server;
 }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-process.stderr.write("[prosell-mcp] started (stdio)\n");
+// ── stdio 엔트리 ─────────────────────────────────────────────────────────
+// HTTP 게이트웨이 모드(PROSELL_MCP_HTTP=1)에서는 stdio 로 기동하지 않는다.
+// 그 경우 이 모듈은 buildServer 만 export 하고 gateway.js 가 사용한다.
+if (process.env.PROSELL_MCP_HTTP !== "1") {
+  // 시작 시 PROSELL_SHOP 이 주어지면 저장(다음 실행부터 생략 가능)
+  if (process.env.PROSELL_SHOP) {
+    try { saveShop(process.env.PROSELL_SHOP); } catch {}
+  }
+  const server = buildServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  process.stderr.write("[prosell-mcp] started (stdio)\n");
+}

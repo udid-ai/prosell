@@ -14,6 +14,23 @@ function apiErr(data, status, fallback) {
   return data?.message || data?.errorMessage || `${fallback}: HTTP ${status}`;
 }
 
+/** 타임아웃 있는 fetch. 백엔드가 응답을 안 주면 무한 대기 대신 지정 시간에 중단한다.
+ *  (커넥터형 게이트웨이에서 업로드가 백엔드 응답 대기로 영구 hang 되는 문제 방지) */
+async function tfetch(url, opts = {}, ms = 30000, label = "요청") {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ac.signal });
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      throw new Error(`${label} 시간 초과: 백엔드가 ${Math.round(ms / 1000)}초 안에 응답하지 않았습니다. 쇼핑몰 API 상태를 확인하세요.`);
+    }
+    throw new Error(`${label} 실패: 백엔드에 연결할 수 없습니다 (${e?.message || e}).`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 응답을 파싱하고 실패면 백엔드 메시지로 throw. 성공이면 json 반환. */
 async function jsonOrThrow(res, fallback) {
   const data = await res.json().catch(() => ({}));
@@ -493,7 +510,74 @@ export const getProductOption = (id) => getClient(`products/options/${encodeURIC
  *   - files:  로컬 파일 경로 배열 — **MCP 서버 프로세스가 읽을 수 있을 때만**(로컬 stdio 배포).
  *   - images: [{data(base64), name}] — 바이트를 직접 전달(원격 MCP 배포에서 로컬/첨부 이미지를 보낼 때).
  *  응답 items[].id 가 파일 유니크키 → 상품 content.<이미지필드> 또는 product[].photo 에 넣는다. */
-export async function uploadProductImages(field, { files, images } = {}) {
+// 바이트의 매직 시그니처로 이미지 종류를 판별(아니면 null). 백엔드 허용: JPEG/PNG/GIF.
+function imageKind(buf) {
+  if (!buf || buf.length < 4) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "jpg";
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "png";
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return "gif";
+  return null;
+}
+
+// URL 이미지 수신 가드(SSRF 방지): http/https 공개 주소만, 로컬/사설망 차단.
+function isSafeHttpUrl(raw) {
+  let u;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const h = u.hostname.toLowerCase();
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local")) return false;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    if (a === 0 || a === 127 || a === 10 || (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return false;
+  }
+  if (h === "::1" || h.startsWith("fe80") || h.startsWith("fc") || h.startsWith("fd")) return false;
+  return true;
+}
+
+// 공개 이미지 URL → 바이트(검증 포함). 커넥터형(원격)에서 로컬 파일 없이 업로드하는 경로.
+async function fetchRemoteImage(url) {
+  if (!isSafeHttpUrl(url)) throw new Error(`이미지 URL 이 허용되지 않습니다(공개 http/https 만 가능): ${url}`);
+  let res;
+  res = await tfetch(url, { redirect: "follow" }, 30000, `이미지 URL 요청(${url})`);
+  if (!res.ok) throw new Error(`이미지 URL 응답 오류(HTTP ${res.status}): ${url}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > 50 * 1048576) throw new Error(`이미지가 너무 큽니다(${buf.length}바이트, 최대 50MB): ${url}`);
+  const kind = imageKind(buf);
+  if (!kind) throw new Error(`이미지가 아닙니다(JPEG/PNG/GIF 시그니처 없음): ${url}`);
+  let name = "";
+  try { name = decodeURIComponent(new URL(url).pathname.split("/").pop() || ""); } catch {}
+  if (!/\.[a-z0-9]+$/i.test(name)) name = `image.${kind}`;
+  return { buf, name };
+}
+
+// 업로드 파일명 살균: 경로 제거 + 위험/이중 확장자 제거 + 안전문자만 + **검증된 형식 확장자 강제**.
+// (실행확장자 .php/.exe 등, 경로주입(../), 이중확장자(x.php.png) 를 원천 차단)
+function safeImageName(raw, kind, n) {
+  let base = String(raw || "").split(/[\\/]/).pop() || ""; // 경로 제거
+  base = base.replace(/\.[^.]*$/, "");                     // 원래 확장자 제거
+  base = base.replace(/\./g, "_");                         // 남은 점 제거(이중확장자 x.php.png 차단)
+  base = base.replace(/[^\p{L}\p{N}_-]+/gu, "_").replace(/^[_-]+/, ""); // 안전문자만
+  base = base.slice(0, 40);
+  if (!base) base = `image_${n}`;
+  return `${base}.${kind}`;                                // 매직바이트로 확인된 확장자로 강제
+}
+// 디코드된 바이트가 실제 이미지인지 검증(아니면 throw). 모든 입력경로(files/images/urls) 공통.
+function assertImageBuffer(buf, ctx) {
+  if (!buf || !buf.length) throw new Error(`상품 이미지 업로드 실패: 빈 이미지 데이터 (${ctx}).`);
+  const kind = imageKind(buf);
+  if (!kind) {
+    throw new Error(
+      `상품 이미지 업로드 실패: 올바른 이미지가 아닙니다(JPEG/PNG/GIF 시그니처 없음, ${buf.length}바이트, ${ctx}). ` +
+      "이미지 파일만 업로드할 수 있습니다. (채팅 첨부는 'vision'만이라 실제 바이트가 없어 가짜 base64 가 됩니다 → 로컬 파일을 읽어 올리거나 공개 URL 사용)"
+    );
+  }
+  if (buf.length < 1024) throw new Error(`상품 이미지 업로드 실패: 이미지가 너무 작습니다(${buf.length}바이트, ${ctx}). 잘린/가짜 데이터로 의심됩니다.`);
+  return kind;
+}
+
+export async function uploadProductImages(field, { files, images, urls } = {}) {
   const form = new FormData();
   form.append("field", field);
   let n = 0;
@@ -502,7 +586,8 @@ export async function uploadProductImages(field, { files, images } = {}) {
     let buf;
     try { buf = await readFile(p); }
     catch { throw new Error(`상품 이미지 업로드 실패: 파일을 읽을 수 없습니다 (${p}). 원격 MCP면 로컬 경로 대신 images(base64)로 보내세요.`); }
-    form.append(`file${n++}`, new Blob([buf]), basename(p));
+    const kind = assertImageBuffer(buf, p); // 로컬 파일도 내용 검증(확장자 위조 방지)
+    form.append(`file${n++}`, new Blob([buf]), safeImageName(basename(p), kind, n));
   }
   for (const img of images || []) {
     const b64 = img?.data ?? img?.data_base64;
@@ -510,12 +595,19 @@ export async function uploadProductImages(field, { files, images } = {}) {
     let buf;
     try { buf = Buffer.from(String(b64).replace(/^data:[^;]+;base64,/, ""), "base64"); }
     catch { throw new Error("상품 이미지 업로드 실패: base64 디코딩 오류"); }
-    if (!buf.length) throw new Error("상품 이미지 업로드 실패: 빈 이미지 데이터");
-    form.append(`file${n++}`, new Blob([buf]), img.name || `image_${n}.png`);
+    const kind = assertImageBuffer(buf, "images(base64)");
+    form.append(`file${n++}`, new Blob([buf]), safeImageName(img.name, kind, n));
   }
-  if (n === 0) throw new Error("상품 이미지 업로드 실패: 보낼 파일이 없습니다 (files 로컬경로 또는 images base64 중 하나 필요).");
+  // URL 경로(커넥터형): 서버가 공개 URL 에서 받아 검증 후 업로드.
+  const urlList = urls == null ? [] : Array.isArray(urls) ? urls : [urls];
+  for (const url of urlList) {
+    const { buf, name } = await fetchRemoteImage(url); // 내부에서 imageKind 검증
+    const kind = imageKind(buf);
+    form.append(`file${n++}`, new Blob([buf]), safeImageName(name, kind, n));
+  }
+  if (n === 0) throw new Error("상품 이미지 업로드 실패: 보낼 이미지가 없습니다 (image_urls / files / images 중 하나 필요).");
   if (n > 10) throw new Error("상품 이미지 업로드 실패: 최대 10개까지 업로드할 수 있습니다.");
-  const res = await fetch(`${apiBase()}/products/images`, { method: "POST", headers: await bearerHeaders(), body: form });
+  const res = await tfetch(`${apiBase()}/products/images`, { method: "POST", headers: await bearerHeaders(), body: form }, 60000, "상품 이미지 업로드");
   return jsonOrThrow(res, "상품 이미지 업로드 실패");
 }
 

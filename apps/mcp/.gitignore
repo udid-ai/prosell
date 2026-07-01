@@ -1,2 +1,8 @@
 node_modules/
 package-lock.json
+
+# 운영 비밀 환경(커밋 금지) — 예시는 deploy/gateway.env.example
+deploy/gateway.env
+
+# .mcpb 빌드 산출물
+*.mcpb

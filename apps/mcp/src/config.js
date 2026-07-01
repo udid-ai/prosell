@@ -3,12 +3,27 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const DIR = join(homedir(), ".prosell-mcp");
 const FILE = join(DIR, "config.json");
 
+// ── 요청별 컨텍스트 (원격 게이트웨이 멀티테넌트용) ────────────────────────
+// stdio 모드에선 컨텍스트가 비어 있어 기존 env/파일 경로가 그대로 쓰인다.
+// HTTP 게이트웨이는 요청마다 runWithContext({ shopBase, accessToken }) 로 감싸
+// 그 요청 동안만 쇼핑몰/토큰을 결정한다(전역 상태 오염 없음).
+const _ctx = new AsyncLocalStorage();
+export function runWithContext(ctx, fn) {
+  return _ctx.run(ctx, fn);
+}
+export function getContext() {
+  return _ctx.getStore() || null;
+}
+
 /** 쇼핑몰 base URL. 끝 슬래시 제거. 환경변수 PROSELL_SHOP 우선. */
 export function shopBase() {
+  const fromCtx = getContext()?.shopBase; // 게이트웨이 요청 컨텍스트 우선
+  if (fromCtx) return fromCtx.replace(/\/$/, "");
   const fromEnv = process.env.PROSELL_SHOP;
   const fromFile = read().shop;
   const base = fromEnv || fromFile;
@@ -71,6 +86,16 @@ export function saveTokens(t) {
 }
 
 export function tokens() {
+  // 게이트웨이 요청 컨텍스트에 토큰이 있으면 그걸 쓴다(만료/갱신은 게이트웨이가 책임).
+  const ctxToken = getContext()?.accessToken;
+  if (ctxToken) {
+    return {
+      access_token: ctxToken,
+      refresh_token: null,
+      access_expires_at: Number.MAX_SAFE_INTEGER,
+      refresh_expires_at: 0,
+    };
+  }
   const c = read();
   if (!c.access_token) return null;
   return {

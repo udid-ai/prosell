@@ -27,8 +27,16 @@ export async function runLogin({ scope = "admin" } = {}) {
   shopBase(); // 쇼핑몰 URL 미설정이면 여기서 에러
   const state = randomUUID();
 
-  // 고정 redirect_uri 재정의 시: 그 호스트/포트로 수신해야 한다.
-  const fixed = process.env.PROSELL_LOGIN_REDIRECT_URI;
+  // ★ redirect_uri 는 앱 등록 때 저장된 값(creds.redirect_uri)을 그대로 써야 한다.
+  //   shop 의 authorize 는 등록값과 «정확일치»를 요구한다(RFC 8252 loopback 포트 무시 안 함).
+  //   connect 는 이 값으로 http://localhost:3000/auth/callback(또는 지정 loopback)을 등록하므로,
+  //   login 도 그 host/port/path 에 직접 수신 서버를 띄워 매칭시킨다(랜덤 포트 쓰면 MATCH_REDIRECT_URI).
+  //   · env(PROSELL_LOGIN_REDIRECT_URI) 가 있으면 최우선.
+  //   · 등록값이 loopback(localhost/127.0.0.1/::1)이면 그걸 사용.
+  //   · 등록값이 공개 도메인(https 스토어프론트)이면 loopback 수신 불가 → 랜덤 포트로 폴백(이 경우
+  //     env 로 loopback redirect 를 등록·지정하거나 백엔드 loopback 매칭이 필요).
+  const fixed = process.env.PROSELL_LOGIN_REDIRECT_URI
+    || (isLoopbackUri(creds.redirect_uri) ? creds.redirect_uri : undefined);
 
   // ★ 즉시 URL 반환 방식(connect 와 동일): 로그인 authorize URL 을 바로 도구 결과로 돌려준다.
   //   콜백까지 blocking 하지 않으므로 "실행 중" 으로 멈춰 보이지 않는다. 백그라운드 loopback 이
@@ -67,7 +75,19 @@ export async function runLogin({ scope = "admin" } = {}) {
     const timer = setTimeout(() => { cleanup(); }, TIMEOUT_MS);
     function cleanup() { clearTimeout(timer); try { server.close(); } catch {} }
 
-    server.on("error", (e) => { if (!settled) { settled = true; reject(e); } });
+    server.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      if (e && e.code === "EADDRINUSE" && fixed) {
+        const p = (() => { try { return new URL(fixed).port || "80"; } catch { return "?"; } })();
+        reject(new Error(
+          `로그인 수신 포트(${p})가 이미 사용 중입니다. 등록된 콜백 주소(${fixed})로 받아야 하는데 ` +
+          `그 포트를 다른 프로그램(예: 스타터 개발서버 npm run dev)이 쓰고 있어요. 그 프로그램을 잠깐 끄고 다시 login 하거나, ` +
+          `PROSELL_LOGIN_REDIRECT_URI 로 다른 등록 콜백을 지정하세요.`));
+        return;
+      }
+      reject(e);
+    });
 
     const listenPort = fixed ? Number(new URL(fixed).port || 80) : 0;
     server.listen(listenPort, "127.0.0.1", () => {
@@ -96,6 +116,15 @@ export async function runLogin({ scope = "admin" } = {}) {
       }
     });
   });
+}
+
+// 등록 redirect_uri 가 로컬 loopback 인지 — 그렇다면 login 이 그 주소에 직접 수신 서버를 띄운다.
+function isLoopbackUri(uri) {
+  if (!uri) return false;
+  try {
+    const h = new URL(uri).hostname.toLowerCase();
+    return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]";
+  } catch { return false; }
 }
 
 // WSL 여선 xdg-open 이 Windows 브라우저를 못 여니 powershell.exe 로 우회한다.

@@ -77,6 +77,14 @@ function saveFedStore() {
 }
 // fedClientStore.set 대신 이걸 써서 저장까지 함께 한다.
 function setFedClient(key, val) { fedClientStore.set(key, val); saveFedStore(); }
+// 쇼핑몰에서 앱(클라이언트)이 삭제돼 캐시가 무효해졌을 때 비운다(재등록 유도). loginBase·canonical 별칭 모두 정리.
+function clearFedClient(key) {
+  let changed = fedClientStore.delete(key);
+  const cid = shopIdOf(key);
+  if (cid && fedClientStore.delete(cid)) changed = true;
+  if (changed) saveFedStore();
+  return changed;
+}
 function fedClient(shopId) {
   if (fedClientStore.has(shopId)) return fedClientStore.get(shopId);
   const map = (() => { try { return JSON.parse(process.env.PROSELL_FED_CLIENTS || "{}"); } catch { return {}; } })();
@@ -355,7 +363,23 @@ async function federationCallback(req, res, url) {
   const pend = fedState ? pendingAuth.get(fedState) : null;
   if (!pend) return html(res, 400, "<p>시간이 지나 연결이 끊겼어요.</p><p class=\"sub\">처음 화면에서 다시 연결해 주세요.</p>");
   pendingAuth.delete(fedState);
-  if (error) return html(res, 400, `<p>로그인이 취소되었거나 문제가 생겼어요.</p><p class="sub">다시 시도해 주세요. (사유: ${esc(error)})</p>`);
+  if (error) {
+    // 자가 치유: 캐시된 페더레이션 클라이언트가 쇼핑몰에서 삭제된 경우(관리자가 앱을 지움 등)
+    //   authorize 가 "등록되지 않은 클라이언트(NONEXISTENT/invalid_client)" 로 실패한다.
+    //   → 캐시를 비우고 곧바로 재등록(provisioning)으로 이어가 새 앱을 등록한다(같은 관리자 세션).
+    const desc = q.get("error_description") || "";
+    const staleClient = /NONEXISTENT|invalid_client|unauthorized_client/i.test(error) || /등록되지\s*않은\s*클라이언트/.test(desc);
+    if (staleClient && pend.loginBase) {
+      clearFedClient(pend.loginBase);
+      const cp = {
+        clientId: pend.claudeClientId, redirect: pend.claudeRedirect, state: pend.claudeState,
+        codeChallenge: pend.codeChallenge, codeChallengeMethod: pend.codeChallengeMethod,
+        scope: FED_SCOPE, resource: pend.resource,
+      };
+      if (cp.redirect) return beginProvision(req, res, cp, pend.loginBase);
+    }
+    return html(res, 400, `<p>로그인이 취소되었거나 문제가 생겼어요.</p><p class="sub">다시 시도해 주세요. (사유: ${esc(error)})</p>`);
+  }
 
   const code = q.get("code");
   if (!code) return html(res, 400, "<p>연결 정보를 받지 못했어요.</p><p class=\"sub\">처음 화면에서 다시 시도해 주세요.</p>");

@@ -21,8 +21,12 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
   // 기본은 create-prosell-app 의 콜백 규약. 환경변수로 재정의 가능.
   const appRedirect = app_redirect_uri || process.env.PROSELL_APP_REDIRECT_URI || "http://localhost:3000/auth/callback";
 
-  let consentUrl = ""; // listen 후 채워짐 — 실패/타임아웃 시 결과로 노출(브라우저 자동열기 실패 대비)
+  // ★ 즉시 URL 반환 방식: loopback 서버를 띄우고 «정식 동의 URL»(redirect_uri·state 포함)을
+  //   바로 도구 결과로 돌려준다. 브라우저 자동열기가 실패해도 AI/사용자가 이 URL 을 그대로 열면 된다.
+  //   서버는 백그라운드에서 계속 대기하다가, 운영자가 로그인·동의하면 자격증명을 저장한다(그 뒤 login).
+  //   (예전엔 콜백까지 blocking → 브라우저가 안 열리면 AI 가 URL 을 못 받아 임의 URL 을 지어내던 문제 해결)
   return await new Promise((resolve, reject) => {
+    let settled = false;
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
       if (url.pathname !== "/callback") {
@@ -42,29 +46,20 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
         saveCredentials(creds);
 
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(callbackPage({ ok: true, title: "연결 완료", message: "이 창을 닫고 AI 로 돌아가세요." }));
-        cleanup();
-        resolve({ ok: true, client_id: creds.client_id, client_name: creds.client_name });
+        res.end(callbackPage({ ok: true, title: "연결 완료", message: "이 창을 닫고 AI 로 돌아가 login 도구를 실행하세요." }));
       } catch (e) {
         res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
         res.end(callbackPage({ ok: false, title: "연결 실패", message: e.message }));
+      } finally {
         cleanup();
-        reject(e);
       }
     });
 
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(
-        "연결 시간 초과(5분). 브라우저가 자동으로 열리지 않았을 수 있습니다. " +
-        (consentUrl ? `아래 전체 주소를 브라우저에서 직접 여세요(주소를 임의로 바꾸지 마세요):\n${consentUrl}` : "다시 시도하세요.")
-      ));
-    }, TIMEOUT_MS);
+    // 백그라운드 대기 상한(자격증명 저장 전 서버가 무한정 떠있지 않게).
+    const timer = setTimeout(() => { cleanup(); }, TIMEOUT_MS);
+    function cleanup() { clearTimeout(timer); try { server.close(); } catch {} }
 
-    function cleanup() {
-      clearTimeout(timer);
-      try { server.close(); } catch {}
-    }
+    server.on("error", (e) => { if (!settled) { settled = true; reject(e); } });
 
     server.listen(0, "127.0.0.1", () => {
       const port = server.address().port;
@@ -74,14 +69,23 @@ export async function runConnect({ app_name = "Prosell MCP", app_redirect_uri } 
       consent.searchParams.set("redirect_uri", redirectUri);     // 코드 수신 loopback
       consent.searchParams.set("app_redirect_uri", appRedirect);  // 등록될 OAuth 콜백
       consent.searchParams.set("state", state);
+      const consentUrl = consent.toString();
 
-      consentUrl = consent.toString();
       tryOpenBrowser(consentUrl);
-      // URL 은 호출한 AI/이용자에게도 보여주기 위해 stderr 로 안내(실패 시 결과 메시지에도 포함)
       process.stderr.write(`\n[prosell-mcp] 운영자 동의 페이지를 여세요:\n${consentUrl}\n\n`);
-    });
 
-    server.on("error", reject);
+      if (!settled) {
+        settled = true;
+        resolve({
+          status: "awaiting_consent",
+          consent_url: consentUrl,
+          message:
+            "이 주소를 브라우저에서 열어 관리자 로그인·동의하세요(자동으로 열렸을 수 있어요). " +
+            "★주소를 절대 바꾸지 마세요(redirect_uri 가 빠지면 거부됩니다). " +
+            "동의하면 앱(자격증명)이 자동 등록·저장됩니다. 그다음 login 도구를 실행하세요.",
+        });
+      }
+    });
   });
 }
 

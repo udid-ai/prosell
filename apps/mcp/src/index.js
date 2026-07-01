@@ -81,7 +81,7 @@ async function specFile(rel) {
 // 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
 // stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
 export function buildServer() {
-const server = new McpServer({ name: "prosell-mcp", version: "0.26.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.27.0" });
 
 // 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
 // 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
@@ -142,19 +142,20 @@ server.tool(
 
 if (!REMOTE) server.tool(
   "connect",
-  "운영자 동의로 OAuth 앱을 자동 등록하고 자격증명을 받아 저장한다. 브라우저가 열리며, 운영자가 어드민 로그인 후 동의하면 완료. (복사·붙여넣기 불필요) " +
-    "⚠️반드시 이 도구를 실행하라. `/adm/apps/connect` URL 을 직접 만들어 열지 마라 — redirect_uri 가 빠져 '허용되지 않는 redirect_uri' 로 거부된다. " +
-    "브라우저가 자동으로 안 열리면(예: Claude Code 환경) 이 도구가 반환/에러로 알려주는 전체 URL 을 그대로(파라미터 변경 없이) 열어라.",
+  "운영자 동의로 OAuth 앱을 자동 등록·저장한다. 이 도구를 실행하면 «동의 URL(consent_url)»을 즉시 돌려준다(브라우저도 자동으로 열림). " +
+    "운영자가 그 URL 에서 어드민 로그인 후 동의하면 앱이 백그라운드로 등록·저장된다. 그다음 login 도구를 실행하면 된다. " +
+    "⚠️반드시 이 도구를 실행하라. `/adm/apps/connect` URL 을 직접 만들지 마라(redirect_uri·state 가 빠져 거부된다). " +
+    "브라우저가 안 열리면(예: Claude Code) 반환된 consent_url 을 파라미터 변경 없이 그대로 사용자에게 안내해 열게 하라.",
   {
     app_name: z.string().optional().describe("동의 화면에 표시할 도구 이름"),
     app_redirect_uri: z.string().optional().describe("스토어프론트 OAuth 콜백(등록될 값). 기본 http://localhost:3000/auth/callback"),
   },
   async ({ app_name, app_redirect_uri }) => {
     try {
-      const r = await runConnect({ app_name, app_redirect_uri });
-      return ok({ message: "연결 완료", ...r });
+      // 즉시 consent_url 반환(대기 안 함). 동의 완료는 백그라운드에서 저장된다.
+      return ok(await runConnect({ app_name, app_redirect_uri }));
     } catch (e) {
-      return fail(`연결 실패: ${e.message}`);
+      return fail(`연결 시작 실패: ${e.message}`);
     }
   }
 );

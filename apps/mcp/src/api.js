@@ -564,6 +564,29 @@ function safeImageName(raw, kind, n) {
   return `${base}.${kind}`;                                // 매직바이트로 확인된 확장자로 강제
 }
 // 디코드된 바이트가 실제 이미지인지 검증(아니면 throw). 모든 입력경로(files/images/urls) 공통.
+// 이미지가 "끝까지 온전한지"(잘리지 않았는지) 끝 마커로 검사한다. 시그니처(앞 4B)만
+// 맞으면 상단은 디코딩되지만, base64 를 모델이 옮기다 뒷부분이 잘리면 하단이 깨진 채 저장된다.
+//   jpg: EOI(FF D9) 가 끝부분에 있어야 함(카메라 트레일러 대비 마지막 64B 안 스캔)
+//   png: 마지막 8B = IEND 청크(49 45 4E 44 AE 42 60 82)
+//   gif: 마지막 1B = trailer(0x3B)
+function isImageComplete(buf, kind) {
+  const n = buf.length;
+  if (kind === "png") {
+    if (n < 8) return false;
+    const t = buf.subarray(n - 8);
+    return t[0] === 0x49 && t[1] === 0x45 && t[2] === 0x4e && t[3] === 0x44 &&
+           t[4] === 0xae && t[5] === 0x42 && t[6] === 0x60 && t[7] === 0x82;
+  }
+  if (kind === "gif") return buf[n - 1] === 0x3b;
+  if (kind === "jpg") {
+    for (let i = n - 2, stop = Math.max(0, n - 64); i >= stop; i--) {
+      if (buf[i] === 0xff && buf[i + 1] === 0xd9) return true;
+    }
+    return false;
+  }
+  return true;
+}
+
 function assertImageBuffer(buf, ctx) {
   if (!buf || !buf.length) throw new Error(`상품 이미지 업로드 실패: 빈 이미지 데이터 (${ctx}).`);
   const kind = imageKind(buf);
@@ -574,6 +597,13 @@ function assertImageBuffer(buf, ctx) {
     );
   }
   if (buf.length < 1024) throw new Error(`상품 이미지 업로드 실패: 이미지가 너무 작습니다(${buf.length}바이트, ${ctx}). 잘린/가짜 데이터로 의심됩니다.`);
+  if (!isImageComplete(buf, kind)) {
+    throw new Error(
+      `상품 이미지 업로드 실패: 이미지가 잘렸습니다(끝 마커 없음, ${buf.length}바이트, ${ctx}). ` +
+      "base64 를 모델이 직접 옮기면 큰 이미지는 중간에 잘립니다. " +
+      "→ 설치형 stdio 의 files:[로컬경로] 또는 공개 URL(image_urls)로 올리세요(서버가 원본을 직접 읽어 잘리지 않습니다)."
+    );
+  }
   return kind;
 }
 

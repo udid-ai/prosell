@@ -80,7 +80,7 @@ async function specFile(rel) {
 // 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
 // stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
 export function buildServer() {
-const server = new McpServer({ name: "prosell-mcp", version: "0.24.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.25.0" });
 
 // 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
 // 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
@@ -178,9 +178,10 @@ server.tool(
 
 server.tool(
   "get_product",
-  "상품 단건(상세) 조회.",
+  "상품 단건(상세) 조회. ★ID 용어: 최상위 `id`=상품번호(조회/수정 키), `product[].id`(=`product_id` CSV)=옵션번호, content.file_photo=대표이미지 id. " +
+    "`product_id` 는 옵션번호 목록이지 상품번호가 아니다.",
   {
-    id: z.union([z.number().int(), z.string()]).describe("상품 id"),
+    id: z.union([z.number().int(), z.string()]).describe("상품 id(=상품번호). 옵션번호(product[].id) 아님"),
     expand: z.string().optional().describe(`기본: ${DETAIL_EXPAND}`),
   },
   async ({ id, expand }) => {
@@ -860,6 +861,9 @@ server.tool(
     "★배송비를 받으려면 delivery 객체를 반드시 함께 보낸다(생략하면 배송비 미설정). " +
     "delivery.parcel_type 이 마스터 스위치다: 10/11/12=무료(이때 배송비는 강제로 0), 21/22=조건부무료, " +
     "31=유료(선불) · 32=유료(착불) · 33=고객선택. **유료 배송비는 parcel_type=31(또는 32) + parcel_basic_price 를 함께** 넣어야 적용된다. " +
+    "★ID 용어(응답 보고 시 정확히): 최상위 `id` = **상품번호**(get_product/update_product/delete_product 에 쓰는 값). " +
+    "`product[].id`(= 응답의 `product_id` CSV 각 값) = **옵션번호**(주문옵션/품목 고유키). content.file_photo = **대표이미지 id**. " +
+    "⚠️`product_id` 필드는 옵션번호 목록이지 상품번호가 아니다 — 사용자에게 상품번호라고 말하지 말 것. " +
     "정확한 필드 스펙은 guide(prosell://guide/llms.txt)·openapi 의 상품 스키마를 참고하라.",
   {
     origin: looseObj().describe("기본정보 — title(필수), option_type(필수), category/onoff 등"),

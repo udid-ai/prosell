@@ -30,8 +30,12 @@ export async function runLogin({ scope = "user" } = {}) {
   // 고정 redirect_uri 재정의 시: 그 호스트/포트로 수신해야 한다.
   const fixed = process.env.PROSELL_LOGIN_REDIRECT_URI;
 
-  let authorizeUrl = ""; // listen 후 채워짐 — 실패/타임아웃 시 결과로 노출(브라우저 자동열기 실패 대비)
+  // ★ 즉시 URL 반환 방식(connect 와 동일): 로그인 authorize URL 을 바로 도구 결과로 돌려준다.
+  //   콜백까지 blocking 하지 않으므로 "실행 중" 으로 멈춰 보이지 않는다. 백그라운드 loopback 이
+  //   운영자 로그인·동의 후 code 를 받아 토큰을 저장한다(그 뒤 status 로 확인).
+  let redirectUri;
   return await new Promise((resolve, reject) => {
+    let settled = false;
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
       const cbPath = fixed ? new URL(fixed).pathname : "/callback";
@@ -51,31 +55,20 @@ export async function runLogin({ scope = "user" } = {}) {
         saveTokens(tok);
 
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(callbackPage({ ok: true, title: "로그인 완료", message: "이 창을 닫고 AI 로 돌아가세요." }));
-        cleanup();
-        resolve({ ok: true, expires_in: tok.expires_in, scope: tok.scope ?? scope });
+        res.end(callbackPage({ ok: true, title: "로그인 완료", message: "이 창을 닫고 AI 로 돌아가세요. 이제 주문·매출 등 운영자 도구를 쓸 수 있어요." }));
       } catch (e) {
         res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
         res.end(callbackPage({ ok: false, title: "로그인 실패", message: e.message }));
+      } finally {
         cleanup();
-        reject(e);
       }
     });
 
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(
-        "로그인 시간 초과(5분). 브라우저가 자동으로 열리지 않았을 수 있습니다. " +
-        (authorizeUrl ? `아래 전체 주소를 브라우저에서 직접 여세요(주소를 임의로 바꾸지 마세요):\n${authorizeUrl}` : "다시 시도하세요.")
-      ));
-    }, TIMEOUT_MS);
+    const timer = setTimeout(() => { cleanup(); }, TIMEOUT_MS);
+    function cleanup() { clearTimeout(timer); try { server.close(); } catch {} }
 
-    function cleanup() {
-      clearTimeout(timer);
-      try { server.close(); } catch {}
-    }
+    server.on("error", (e) => { if (!settled) { settled = true; reject(e); } });
 
-    let redirectUri;
     const listenPort = fixed ? Number(new URL(fixed).port || 80) : 0;
     server.listen(listenPort, "127.0.0.1", () => {
       const port = server.address().port;
@@ -87,12 +80,21 @@ export async function runLogin({ scope = "user" } = {}) {
       authorize.searchParams.set("scope", scope);
       authorize.searchParams.set("state", state);
 
-      authorizeUrl = authorize.toString();
+      const authorizeUrl = authorize.toString();
       tryOpenBrowser(authorizeUrl);
       process.stderr.write(`\n[prosell-mcp] 운영자 로그인 페이지를 여세요:\n${authorizeUrl}\n\n`);
-    });
 
-    server.on("error", reject);
+      if (!settled) {
+        settled = true;
+        resolve({
+          status: "awaiting_login",
+          login_url: authorizeUrl,
+          message:
+            "이 주소를 브라우저에서 열어 운영자 로그인·동의하세요(자동으로 열렸을 수 있어요). " +
+            "★주소를 절대 바꾸지 마세요. 완료되면 토큰이 자동 저장됩니다. status 도구로 로그인 상태를 확인하세요.",
+        });
+      }
+    });
   });
 }
 

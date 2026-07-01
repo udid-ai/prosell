@@ -81,7 +81,7 @@ async function specFile(rel) {
 // 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
 // stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
 export function buildServer() {
-const server = new McpServer({ name: "prosell-mcp", version: "0.28.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.29.0" });
 
 // 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
 // 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
@@ -201,17 +201,18 @@ server.tool(
 // (원격 게이트웨이는 커넥터 OAuth 로 토큰이 주입되므로 login 을 노출하지 않는다.)
 if (!REMOTE) server.tool(
   "login",
-  "운영자로 로그인해 주문 관리용 토큰을 발급한다. 브라우저가 열리며, 운영자가 로그인/동의하면 완료. (connect 로 앱 연결을 먼저 끝내야 함) " +
-    "⚠️URL 을 직접 만들지 말고 이 도구를 실행하라. 브라우저가 자동으로 안 열리면 이 도구가 알려주는 전체 주소를 그대로 열어라.",
+  "운영자로 로그인해 주문 관리용 토큰을 발급한다. 실행하면 «로그인 URL(login_url)»을 즉시 돌려준다(브라우저도 자동으로 열림). " +
+    "운영자가 그 URL 에서 로그인·동의하면 토큰이 백그라운드로 저장된다(완료는 status 로 확인). (connect 로 앱 연결을 먼저 끝내야 함) " +
+    "⚠️URL 을 직접 만들지 말고 이 도구가 반환한 login_url 을 파라미터 변경 없이 그대로 안내하라.",
   {
     scope: z.string().optional().describe("OAuth scope (기본 user)"),
   },
   async ({ scope }) => {
     try {
-      const r = await runLogin({ scope });
-      return ok({ message: "운영자 로그인 완료", ...r });
+      // 즉시 login_url 반환(대기 안 함). 로그인 완료는 백그라운드에서 토큰 저장된다.
+      return ok(await runLogin({ scope }));
     } catch (e) {
-      return fail(`로그인 실패: ${e.message}`);
+      return fail(`로그인 시작 실패: ${e.message}`);
     }
   }
 );

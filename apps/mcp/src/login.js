@@ -21,7 +21,7 @@ import { callbackPage } from "./callback-page.js";
 
 const TIMEOUT_MS = 5 * 60 * 1000;
 
-export async function runLogin({ scope = "user" } = {}) {
+export async function runLogin({ scope = "admin" } = {}) {
   const creds = credentials();
   if (!creds) throw new Error("먼저 `connect` 로 앱을 연결하세요(자격증명 필요).");
   shopBase(); // 쇼핑몰 URL 미설정이면 여기서 에러

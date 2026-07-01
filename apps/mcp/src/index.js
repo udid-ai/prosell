@@ -81,7 +81,7 @@ async function specFile(rel) {
 // 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
 // stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
 export function buildServer() {
-const server = new McpServer({ name: "prosell-mcp", version: "0.29.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.30.0" });
 
 // 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
 // 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
@@ -205,11 +205,13 @@ if (!REMOTE) server.tool(
     "운영자가 그 URL 에서 로그인·동의하면 토큰이 백그라운드로 저장된다(완료는 status 로 확인). (connect 로 앱 연결을 먼저 끝내야 함) " +
     "⚠️URL 을 직접 만들지 말고 이 도구가 반환한 login_url 을 파라미터 변경 없이 그대로 안내하라.",
   {
-    scope: z.string().optional().describe("OAuth scope (기본 user)"),
+    scope: z.string().optional().describe("OAuth scope (기본 admin — 운영자 로그인). user 로 주면 고객 로그인 페이지로 가니 바꾸지 말 것"),
   },
   async ({ scope }) => {
     try {
       // 즉시 login_url 반환(대기 안 함). 로그인 완료는 백그라운드에서 토큰 저장된다.
+      // scope 기본 admin: shop OAuth authorize 는 scope=user 면 '고객' 로그인 페이지로,
+      // 그 외(admin)면 '운영자' 로그인 폼으로 보낸다. 운영자 토큰이 목적이라 admin 이 기본.
       return ok(await runLogin({ scope }));
     } catch (e) {
       return fail(`로그인 시작 실패: ${e.message}`);

@@ -3,11 +3,14 @@
 // ── 공유 스타일 (Tailwind 클래스) ────────────────────────────
 // AI 재디자인 시 className 을 자유롭게 바꿔도 된다. 색은 globals.css 의 토큰을 따른다.
 export const fieldCls = "mt-2 w-full rounded-sm border border-line bg-card px-3 py-3 text-[15px] text-text outline-none focus:border-accent read-only:bg-readonly";
-export const labelCls = "mt-3 block text-[13px] text-sub";
+export const labelCls = "mt-5 block text-[13px] text-sub";
 export const smallBtnCls = "cursor-pointer whitespace-nowrap rounded-sm border-0 bg-accent px-3 py-2 text-[13px] text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60";
 // 입력칸과 동일한 높이의 인라인 버튼(발송/확인/주소검색)
 export const inlineBtnCls = "cursor-pointer shrink-0 whitespace-nowrap rounded-sm border border-transparent bg-accent px-4 py-3 text-[15px] leading-[1.5] text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60";
 export const shellCls = "mx-auto my-8 max-w-[560px] rounded-md border border-line bg-card p-6";
+// 가입 흐름(약관/입력폼/완료) 전용 — 바깥은 테두리 없는 컨테이너 폭 영역(넓은 느낌), 안쪽 콘텐츠는 기존 폭(560px) 유지.
+export const joinOuterCls = "mx-auto my-8 w-full max-w-content px-4 py-8 sm:px-6";
+export const joinContentCls = "mx-auto w-full max-w-[560px]";
 
 // 큰 버튼: 활성/비활성 클래스
 export function bigBtnCls(on: boolean) {

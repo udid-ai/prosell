@@ -21,7 +21,7 @@ export default function BottomNav({ tree }: { tree: CategoryNode[] }) {
   const links = [
     { href: "/", label: "홈", Icon: HomeIcon, active: pathname === "/" },
     { href: "/cart", label: "장바구니", Icon: CartIcon, active: pathname.startsWith("/cart") },
-    { href: "/mypage", label: "내정보", Icon: UserIcon, active: pathname.startsWith("/mypage") },
+    { href: "/account", label: "내정보", Icon: UserIcon, active: pathname.startsWith("/account") || pathname.startsWith("/mypage") },
   ];
 
   const catActive = pathname.startsWith("/category") || sheet;

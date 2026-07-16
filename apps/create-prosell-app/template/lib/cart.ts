@@ -23,6 +23,9 @@ export type AddItem = {
   label?: string;
   price?: number;
   quantity: number;
+  request?: string; // 상품 요청사항(주문옵션 라인에만). 레거시 cart.request 컬럼.
+  orderupload?: string; // 주문 파일접수 업로드 파일 id(콤마). 레거시 cart.orderupload.
+  delivery_type?: number; // 선택 배송수단 3자리 코드(레거시 real_delivery_type).
 };
 
 type ServerItem = {
@@ -62,23 +65,45 @@ export type CartGroupItem = {
   title: string; thumb: string; option_label: string;
   unit: number; qty: number; line_total: number;
   bulk_discount?: number; soldout?: number; state?: number; addoption?: number;
+  option_type?: number; // >0 이면 옵션 상품 → 상품페이지명 + 옵션명 둘 다 표시
+  original?: number; // 할인 전 정가(있고 item_total 보다 크면 취소선 표시)
   addoptions: CartAddo[]; item_total: number;
 };
 export type CartGroup = {
   key: string; orderable: number;
   supplier: { id: number; title: string };
-  delivery: { method: number; method_label: string; fee: number; free_price: number; is_free: number };
+  delivery: {
+    method: number; method_name?: string; delivery_type?: number;
+    parcel_title?: string; basic_price?: number; free_price: number;
+    area1_price?: number; area2_price?: number;
+    extra_charge?: number; weight?: number;
+    range2_from?: number; range2_price?: number; range3_from?: number; range3_price?: number; repeat_quantity?: number;
+    delivery_use?: number; guide?: string; guide_detail?: string;
+    overseas?: { country: string; day: number; date: string | null; customs: number; return_price: number } | null;
+    fee: number; is_free: number;
+  };
   items: CartGroupItem[]; subtotal: number; discount: number; shipping_fee: number;
 };
 export type CartGrouped = {
   groups: CartGroup[];
-  summary: { group_cnt: number; item_cnt: number; item_price: number; bulk_discount: number; goods_price: number; delivery_price: number; total_price: number };
+  tab?: "domestic" | "country";                 // 현재 조회한 배송 탭
+  country_onoff?: number;                        // 1=해외배송 사용(국내/해외 탭 노출)
+  count?: { domestic: number; country: number }; // 탭별 품목 수(활성 탭 무관하게 항상 계산)
+  summary: {
+    group_cnt: number; item_cnt: number; item_price: number; goods_price: number;
+    benefit_discount?: number; level_discount?: number; bulk_discount: number; exclusive_discount?: number;
+    delivery_price: number; total_price: number;
+    complete_point?: number; review_point?: number;
+  };
 };
 
-export async function getCartGrouped(): Promise<CartGrouped | null> {
+// lineKeys 를 주면 선택 품목만 계산한 요약을 받는다(장바구니 체크박스 재계산).
+export async function getCartGrouped(lineKeys?: string[], tab?: "domestic" | "country"): Promise<CartGrouped | null> {
   if (typeof window === "undefined") return null;
   try {
-    const res = await fetch("/api/cart?group=1", { cache: "no-store" });
+    const q = lineKeys && lineKeys.length ? `&line_keys=${encodeURIComponent(lineKeys.join(","))}` : "";
+    const t = tab === "country" ? "&tab=country" : "";
+    const res = await fetch(`/api/cart?group=1${q}${t}`, { cache: "no-store" });
     return (await res.json()) as CartGrouped;
   } catch { return null; }
 }
@@ -88,7 +113,7 @@ export async function cartCount(): Promise<number> {
   try {
     const res = await fetch("/api/cart", { cache: "no-store" });
     const j = (await res.json()) as ServerCart;
-    return j.total_qty ?? 0;
+    return j.item_cnt ?? 0; // 품목(라인) 수 — 수량 합계(total_qty) 아님
   } catch { return 0; }
 }
 
@@ -117,6 +142,17 @@ export async function removeFromCart(key: string): Promise<void> {
   try {
     await fetch("/api/cart", {
       method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ line_key: key }),
+    });
+    emit();
+  } catch {}
+}
+
+// 선택 다건 삭제 — line_keys 배열을 한 번의 요청으로 삭제(선택삭제).
+export async function removeManyFromCart(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  try {
+    await fetch("/api/cart", {
+      method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ line_keys: keys }),
     });
     emit();
   } catch {}

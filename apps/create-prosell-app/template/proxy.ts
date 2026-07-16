@@ -1,78 +1,74 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// 토큰 쿠키 이름(lib/prosell.ts 의 AT/RT 와 동일)
-const AT = "pa_at";
-const RT = "pa_rt";
-// 선제 갱신 skew(lib/prosell.ts AT_SKEW 와 동일) — AT 쿠키를 실제 만료보다 5분 일찍 죽인다.
-// next/headers 를 import 하는 prosell.ts 는 proxy(edge)에서 못 쓰므로 값만 인라인.
-const AT_SKEW = 300;
+// 액세스 토큰 선제 갱신 proxy(Next 16에서 middleware → proxy 로 규칙명 변경).
+// AT 쿠키는 실제 토큰 만료 5분 전(AT_SKEW) 만료되도록 발급된다(lib/prosell.ts atCookieMaxAge).
+// → AT 쿠키가 사라졌지만 RT 쿠키가 남아있으면, 여기서 refresh_token 으로 재발급해
+//   같은 요청부터 로그인 상태를 유지한다(만료 직전 리프레시 누락 방지).
+// Edge 런타임이라 next/headers 를 쓰는 lib/prosell.ts 는 임포트하지 않고 상수/요청을 자체 정의한다.
 
-// 액세스 토큰(쿠키) 자동 갱신 proxy(구 middleware — Next 16에서 규칙명이 proxy 로 바뀜).
-// AT 쿠키 maxAge = expires_in - AT_SKEW(5분)이라, 실제 토큰이 죽기 5분 전에 브라우저가 삭제한다.
-// → AT 쿠키가 없고 RT 쿠키만 있으면(=만료 임박/만료) refresh_token 으로 선제 재발급한다.
-// 백엔드: POST /api/v2/oauth/token (grant_type=refresh_token, form-encoded, client_secret 필요).
+const AT = "pa_at"; // access token 쿠키
+const RT = "pa_rt"; // refresh token 쿠키
+const EXP = "pa_exp"; // 만료 힌트(비-httpOnly) — 클라이언트 SessionKeeper 스케줄용
+
 export async function proxy(req: NextRequest) {
   const at = req.cookies.get(AT)?.value;
   const rt = req.cookies.get(RT)?.value;
 
-  // 액세스 토큰 살아있거나, RT 없으면(비로그인) 아무것도 안 함
+  // AT 유효 → 통과. RT 없음 → 갱신 불가(비회원/완전 만료).
   if (at || !rt) return NextResponse.next();
 
+  // 실제 문서 내비게이션에서만 갱신한다. 백엔드가 refresh 시 이전 RT 를 즉시 폐기(회전)하므로,
+  // 프리페치/에셋/병렬 fetch 등 동시요청이 같은 RT 로 refresh 하면 레이스로 로그아웃될 수 있다.
+  const isPrefetch = !!req.headers.get("next-router-prefetch") || req.headers.get("purpose") === "prefetch";
+  if (req.headers.get("sec-fetch-dest") !== "document" || isPrefetch) return NextResponse.next();
+
   const base = process.env.PROSELL_API_BASE;
-  const cid = process.env.PROSELL_CLIENT_ID;
-  const sec = process.env.PROSELL_CLIENT_SECRET;
-  if (!base || !cid || !sec) return NextResponse.next();
+  const clientId = process.env.PROSELL_CLIENT_ID;
+  const clientSecret = process.env.PROSELL_CLIENT_SECRET;
+  if (!base || !clientId || !clientSecret) return NextResponse.next();
+
+  const secure = (req.headers.get("x-forwarded-proto") || req.nextUrl.protocol.replace(/:$/, "")) === "https";
 
   try {
-    const body = new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: rt,
-      client_id: cid,
-      client_secret: sec,
-    });
-    const r = await fetch(`${base}/api/v2/oauth/token`, {
+    const r = await fetch(`${base}/api/v2/member/login`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, grant_type: "refresh_token", refresh_token: rt }),
       cache: "no-store",
     });
-    const d = (await r.json().catch(() => null)) as
-      | { access_token?: string; expires_in?: number; refresh_token?: string; refresh_token_expires_in?: number }
-      | null;
+    const d = (await r.json().catch(() => ({}))) as Record<string, unknown>;
 
-    // 리프레시 만료/실패 → RT 제거(로그아웃 상태)
-    if (!r.ok || !d?.access_token) {
-      const res = NextResponse.next();
-      res.cookies.delete(RT);
-      return res;
+    if (!r.ok || !d.access_token) {
+      // 갱신 실패 → «비파괴» 통과. RT 를 지우지 않는다.
+      //  · 클라이언트 SessionKeeper 가 동시에 회전 성공시켜 놓은 RT 를, 레이스에서 진 proxy 가
+      //    삭제해 로그아웃시키는 사고를 방지(회전 토큰 특성).
+      //  · RT 가 진짜 만료면 AT 부재만으로 UI 는 이미 로그아웃 표시(getToken=AT 기준). 남은 쿠키는
+      //    이후 요청에서 자연히 실패·정리되며 유해하지 않다.
+      return NextResponse.next();
     }
 
     const newAt = String(d.access_token);
-    const newRt = d.refresh_token ? String(d.refresh_token) : rt;
+    const newRt = d.refresh_token ? String(d.refresh_token) : rt; // 회전 시 새 RT, 아니면 기존 유지
+    const expiresIn = typeof d.expires_in === "number" ? d.expires_in : 10800;
+    const atMaxAge = Math.max(60, expiresIn - 300); // AT_SKEW=300
+    const rtMaxAge = typeof d.refresh_token_expires_in === "number" && d.refresh_token_expires_in > 0
+      ? d.refresh_token_expires_in : 2592000;
 
-    // 현재 요청에도 새 AT 를 노출 → 이번 렌더부터 로그인 인식(1요청 지연 제거)
-    const reqHeaders = new Headers(req.headers);
-    const cookieHeader = req.headers.get("cookie") || "";
-    reqHeaders.set("cookie", `${cookieHeader ? cookieHeader + "; " : ""}${AT}=${newAt}`);
-    const res = NextResponse.next({ request: { headers: reqHeaders } });
-
-    const secure = (req.headers.get("x-forwarded-proto") || req.nextUrl.protocol.replace(/:$/, "")) === "https";
-    res.cookies.set(AT, newAt, {
-      httpOnly: true, path: "/", sameSite: "lax", secure,
-      maxAge: Math.max(60, (typeof d.expires_in === "number" ? d.expires_in : 10800) - AT_SKEW),
-    });
-    res.cookies.set(RT, newRt, {
-      httpOnly: true, path: "/", sameSite: "lax", secure,
-      // 폴백 30일 — 로그인 라우트(2592000)와 통일. 서버는 refresh_token_expires_in 을 항상 반환하므로 평소엔 미사용.
-      maxAge: typeof d.refresh_token_expires_in === "number" ? d.refresh_token_expires_in : 2592000,
-    });
+    // 같은 요청의 downstream(RSC/route)이 새 AT 를 읽도록 요청 쿠키도 갱신.
+    req.cookies.set(AT, newAt);
+    req.cookies.set(RT, newRt);
+    const res = NextResponse.next({ request: { headers: req.headers } });
+    res.cookies.set(AT, newAt, { httpOnly: true, path: "/", sameSite: "lax", secure, maxAge: atMaxAge });
+    res.cookies.set(RT, newRt, { httpOnly: true, path: "/", sameSite: "lax", secure, maxAge: rtMaxAge });
+    // 만료 힌트(실제 만료 epoch ms) — 클라이언트 SessionKeeper 가 읽어 선제 갱신 스케줄
+    res.cookies.set(EXP, String(Date.now() + expiresIn * 1000), { httpOnly: false, path: "/", sameSite: "lax", secure, maxAge: rtMaxAge });
     return res;
   } catch {
     return NextResponse.next();
   }
 }
 
+// 정적 자산·이미지·favicon 제외한 모든 경로에서 동작(페이지·API 요청 시 선제 갱신).
 export const config = {
-  // 정적 자산 제외(나머지 페이지·API 라우트에서 갱신). AT 살아있으면 즉시 통과라 비용 미미.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|robots.txt).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico|css|js|map|woff2?|ttf)$).*)"],
 };

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getToken, fetchCategories } from "@/lib/prosell";
+import { getToken, fetchCategories, fetchAccount } from "@/lib/prosell";
 import ThemeToggle from "./ThemeToggle";
 import CategoryNav from "./CategoryNav";
 import SearchBar from "./SearchBar";
@@ -11,26 +11,39 @@ import { CartIcon, UserIcon } from "./icons";
 export default async function Header() {
   const [token, tree] = await Promise.all([getToken(), fetchCategories()]);
   const loggedIn = !!token;
+  // 로그인 시 표시할 성명(내정보 아이콘 왼쪽). 없으면 닉네임/아이디로 폴백.
+  const account = loggedIn ? await fetchAccount(token) : null;
+  const memberName = account
+    ? String(account.origin.name || account.origin.nick || account.origin.uid || "").trim()
+    : "";
 
   const iconBtn =
     "grid h-9 w-9 place-items-center rounded-full text-text transition-colors hover:bg-line";
 
   return (
-    <header className="sticky top-0 z-40 border-b border-line bg-card/90 backdrop-blur-md">
+    <header className="site-header sticky top-0 z-40 border-b border-line bg-card/90 backdrop-blur-md">
       {/* 상단 바 */}
       <div className="mx-auto flex max-w-content items-center gap-3 px-4 py-3 md:gap-6">
         <Link href="/" className="shrink-0 text-[18px] font-extrabold tracking-tight text-text">
           프로셀
         </Link>
 
-        {/* 데스크탑 검색 (가운데, 넓게) */}
+        {/* 데스크탑 검색 (가운데) */}
         <div className="hidden flex-1 md:block">
-          <SearchBar className="mx-auto max-w-xl" />
+          <SearchBar className="mx-auto max-w-sm" />
         </div>
 
         {/* 액션 */}
         <nav className="ml-auto flex items-center gap-1">
-          <Link href="/mypage" aria-label="내정보" title="내정보" className={iconBtn}>
+          {loggedIn && memberName && (
+            <Link href="/account" className="mr-1 hidden max-w-[140px] truncate text-sm text-text hover:text-accent sm:block">
+              <b className="font-semibold">{memberName}</b> 님
+            </Link>
+          )}
+          <Link
+            href={loggedIn ? "/account" : "/auth/login?redirect=%2Faccount"}
+            aria-label="내정보" title="내정보" className={iconBtn}
+          >
             <UserIcon className="h-5 w-5" />
           </Link>
           <Link href="/cart" aria-label="장바구니" title="장바구니" className={`relative ${iconBtn}`}>
@@ -47,6 +60,7 @@ export default async function Header() {
             </form>
           ) : (
             <div className="hidden items-center gap-1 md:flex">
+              <Link href="/order/guest" className="rounded-full px-2 py-1 text-sm text-sub hover:text-accent">비회원 주문조회</Link>
               <Link href="/auth/login" className="rounded-full px-2 py-1 text-sm text-sub hover:text-accent">로그인</Link>
               <Link href="/auth/join" className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:opacity-90">회원가입</Link>
             </div>

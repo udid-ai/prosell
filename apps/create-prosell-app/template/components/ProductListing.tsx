@@ -13,6 +13,8 @@ export default function ProductListing({
   limit,
   basePath,
   query = {},
+  demoFallback = true,
+  adultAllowed = false,
 }: {
   items: ProductItem[];
   total: number;
@@ -21,6 +23,8 @@ export default function ProductListing({
   limit: string;
   basePath: string;
   query?: Record<string, string>;
+  demoFallback?: boolean; // 실데이터 없을 때 데모 폴백 여부(홈만 true, 카테고리는 false)
+  adultAllowed?: boolean; // 뷰어 성인 권한(성인상품 이미지 노출 허용)
 }) {
   return (
     <>
@@ -29,7 +33,7 @@ export default function ProductListing({
           <ListControls total={total} order={order} limit={limit} basePath={basePath} query={query} />
         </div>
       )}
-      <ProductGrid items={items} />
+      <ProductGrid items={items} demoFallback={demoFallback} adultAllowed={adultAllowed} />
       <Pagination total={total} page={page} perPage={Number(limit) || 20} basePath={basePath} query={{ ...query, order, limit }} />
     </>
   );

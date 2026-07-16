@@ -42,7 +42,7 @@ export default function Pagination({
     );
 
   return (
-    <nav aria-label="페이지" className="mt-8 flex items-center justify-center gap-1.5">
+    <nav aria-label="페이지" className="mb-8 mt-8 flex items-center justify-center gap-1.5">
       <Arrow to={1} show={cur > 1} label="첫 페이지">«</Arrow>
       <Arrow to={start - 1} show={start > 1} label="이전 5페이지">‹</Arrow>
 

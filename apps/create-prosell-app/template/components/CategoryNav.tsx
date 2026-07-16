@@ -7,7 +7,8 @@ import type { CategoryNode } from "@/lib/prosell";
 // 데스크탑 카테고리 메가메뉴. hover 로 열고, 항목 클릭/마우스이탈 시 닫힌다.
 // 데이터는 Header(서버)에서 props 로 받는다(추가 요청 없음).
 
-const cat = (code: string) => `/category/${encodeURIComponent(code)}`;
+// 카테고리 링크는 불변 id 기준(레거시와 동일). 이동/재정렬에도 URL 안정.
+const cat = (id: number) => `/category/${id}`;
 
 function Chevron({ open }: { open: boolean }) {
   return (
@@ -57,7 +58,7 @@ export default function CategoryNav({ tree }: { tree: CategoryNode[] }) {
               onMouseEnter={() => setOpen(hasKids ? c.id : null)}
             >
               <Link
-                href={cat(c.code)}
+                href={cat(c.id)}
                 onClick={close}
                 onFocus={() => setOpen(hasKids ? c.id : null)}
                 className={`flex h-11 items-center px-3 text-sm transition-colors hover:text-accent ${isOpen ? "text-accent" : "text-text"}`}
@@ -66,20 +67,18 @@ export default function CategoryNav({ tree }: { tree: CategoryNode[] }) {
                 {hasKids && <Chevron open={isOpen} />}
               </Link>
 
-              {hasKids && (
-                <div
-                  className={`absolute left-0 top-full z-30 transition-all duration-150 ${
-                    isOpen ? "visible translate-y-0 opacity-100" : "invisible translate-y-1 opacity-0"
-                  }`}
-                >
+              {hasKids && isOpen && (
+                // 열렸을 때만 렌더 — 닫힌 상태로 mount 하면(invisible) 우측 카테고리 드롭다운이 뷰포트 밖으로
+                // 뻗어 레이아웃 공간을 차지 → 전역 가로 스크롤 유발. 조건부 렌더로 제거.
+                <div className="absolute left-0 top-full z-30">
                   <div className="min-w-[15rem] rounded-b-md border border-t-0 border-line bg-card p-3 shadow-lg">
                     <div className="grid auto-cols-[minmax(9rem,1fr)] grid-flow-col gap-x-5 gap-y-1">
                       {c.children.map((sub) => (
                         <div key={sub.id} className="min-w-0">
                           <Link
-                            href={cat(sub.code)}
+                            href={cat(sub.id)}
                             onClick={close}
-                            className="block truncate rounded px-2 py-1.5 text-[13px] font-semibold text-text hover:bg-bg hover:text-accent"
+                            className="block truncate rounded px-2 py-1.5 text-[13px] font-semibold text-text hover:bg-surface hover:text-accent"
                           >
                             {sub.title}
                           </Link>
@@ -88,9 +87,9 @@ export default function CategoryNav({ tree }: { tree: CategoryNode[] }) {
                               {sub.children.map((leaf) => (
                                 <li key={leaf.id}>
                                   <Link
-                                    href={cat(leaf.code)}
+                                    href={cat(leaf.id)}
                                     onClick={close}
-                                    className="block truncate rounded px-2 py-1 text-[12px] text-sub hover:bg-bg hover:text-accent"
+                                    className="block truncate rounded px-2 py-1 text-[12px] text-sub hover:bg-surface hover:text-accent"
                                   >
                                     {leaf.title}
                                   </Link>

@@ -3,12 +3,16 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Account, MemberConfig } from "@/lib/prosell";
+import { formatPhone } from "@/lib/format";
 import { fieldCls, labelCls, bigBtnCls, inlineBtnCls } from "./joinShared";
 import Zipcode from "./Zipcode";
+import ContactVerifyModal from "./ContactVerifyModal";
+import { useCertify } from "./useCertify";
 
 type Props = { account: Account; config: MemberConfig | null };
 
-const cardCls = "mx-auto my-6 max-w-[560px] rounded-md border border-line bg-card p-6";
+// 폭·중앙정렬은 account/layout 콘텐츠 열이 담당 → 카드는 열 너비 100% 채운다.
+const cardCls = "rounded-md border border-line bg-card p-6";
 const subjectCls = "mb-1 mt-6 text-[13px] font-bold text-sub";
 const s = (x: unknown) => (x == null ? "" : String(x));
 
@@ -19,7 +23,12 @@ export default function EditForm({ account, config }: Props) {
   const f = config?.fields ?? {};
   const opt = config?.options ?? { gender: [], bank: [], interest: [] };
   const show = (k: string) => (f[k] ?? 0) >= 1;
-  const certified = Number(i.certify_mode ?? 0) > 0; // 본인확인 회원: 이름/생일/성별/휴대폰 잠금
+  // 정보수정 조건은 회원 플래그(certify_mode)가 아니라 쇼핑몰 설정(verify.*)으로 판단한다.
+  // → 쇼핑몰이 본인확인을 끄면(join_certify off) 기존 인증 회원도 이름/휴대폰을 자유 수정 가능.
+  const verify = config?.verify ?? { hp: false, email: false, certify: false };
+  const shopCertify = verify.certify;              // 쇼핑몰이 본인확인(PASS) 사용 → 이름/생일/성별/휴대폰은 본인확인으로만 변경
+  const needHpVerify = verify.hp && !shopCertify;  // 본인확인을 쓰면 휴대폰은 본인확인이 담당(SMS 인증 아님)
+  const needEmailVerify = verify.email;
 
   // 프리필
   const [nick, setNick] = useState(s(i.nick));
@@ -29,6 +38,35 @@ export default function EditForm({ account, config }: Props) {
   const [hp, setHp] = useState(s(o.hp));
   const [email, setEmail] = useState(s(o.email));
   const [tel, setTel] = useState(s(o.tel));
+  // 인증 사용 시 휴대폰/이메일은 랜딩폼에서 읽기전용 → "변경" 버튼으로 모달에서 변경완료 처리.
+  const [modal, setModal] = useState<"hp" | "email" | null>(null);
+  // 인증 미사용 시에만 랜딩폼에서 직접 수정 가능.
+  const hpInline = !shopCertify && !needHpVerify;
+  const emailInline = !needEmailVerify;
+  // 본인확인(PASS) — 완료 즉시 certify_id 로 서버에 반영(hp/email 모달과 동일 패턴)하고,
+  // 저장 응답의 갱신된 회원정보로 폼을 채운다. (프로필 프리필은 로그인 상태에서 certify.mid 가
+  // 채워지면 막히므로, 실제 저장 결과를 사용해 mid 세팅 여부와 무관하게 반영)
+  const [certifyApplied, setCertifyApplied] = useState(false);
+  const [certifyMsg, setCertifyMsg] = useState("");
+  const { launch: launchCertify } = useCertify(async ({ ok, certify_id, message }) => {
+    if (!ok || !certify_id) { setCertifyMsg(message || "본인확인에 실패했습니다."); return; }
+    setCertifyMsg("본인확인 완료 — 반영 중…");
+    try {
+      const r = await fetch("/account/edit/submit", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ certify_id }),
+      });
+      const d = await r.json();
+      if (!d.ok) { setCertifyMsg(d.error || "본인확인 반영에 실패했습니다."); return; }
+      const a = (d.account?.origin ?? {}) as Record<string, unknown>;
+      if (a.hp) setHp(String(a.hp));
+      if (a.name) setName(String(a.name));
+      if (a.birth) setBirth(String(a.birth).slice(0, 10));
+      if (a.gender != null && a.gender !== "") setGender(String(a.gender));
+      setCertifyApplied(true);
+      setCertifyMsg("본인확인이 완료되어 정보가 갱신되었습니다.");
+    } catch { setCertifyMsg("통신 오류가 발생했습니다."); }
+  });
   const [emailReceive, setEmailReceive] = useState(o.email_receive === 1 || o.email_receive === "1");
   const [hpReceive, setHpReceive] = useState(o.hp_receive === 1 || o.hp_receive === "1");
   const [zipcode, setZipcode] = useState(s(o.zipcode));
@@ -40,10 +78,6 @@ export default function EditForm({ account, config }: Props) {
   const [banknum, setBanknum] = useState(s(i.banknum));
   const [bankholder, setBankholder] = useState(s(i.bankholder));
   const [profile, setProfile] = useState(s(i.profile));
-  // 비밀번호 변경(선택)
-  const [curPw, setCurPw] = useState("");
-  const [newPw, setNewPw] = useState("");
-  const [newPw2, setNewPw2] = useState("");
 
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -51,15 +85,9 @@ export default function EditForm({ account, config }: Props) {
 
   async function submit() {
     setMsg("");
-    if (newPw) {
-      if (!curPw) { setMsg("현재 비밀번호를 입력해 주세요."); return; }
-      if (newPw.length < 4) { setMsg("새 비밀번호는 4자 이상이어야 합니다."); return; }
-      if (newPw !== newPw2) { setMsg("새 비밀번호가 일치하지 않습니다."); return; }
-    }
-
+    // 휴대폰/이메일은 인증 사용 시 모달에서 즉시 저장되므로 여기선 인라인(인증 미사용) 값만 보낸다.
     const body: Record<string, unknown> = {
       nick: nick.trim(),
-      email: email.trim(),
       tel: tel.replace(/[^0-9]/g, ""),
       email_receive: emailReceive,
       hp_receive: hpReceive,
@@ -73,24 +101,25 @@ export default function EditForm({ account, config }: Props) {
       bankholder: bankholder.trim(),
       profile: profile.trim(),
     };
-    // 본인확인 회원은 이름/생일/성별/휴대폰을 보내지 않음(서버에서도 잠금)
-    if (!certified) {
+    if (emailInline) body.email = email.trim();
+    // 본인확인 사용 쇼핑몰은 이름/생일/성별/휴대폰을 보내지 않음(서버에서도 잠금)
+    if (!shopCertify) {
       body.name = name.trim();
       body.birth = birth.trim();
       body.gender = gender ? Number(gender) : 0;
-      body.hp = hp.replace(/[^0-9]/g, "");
+      if (hpInline) body.hp = hp.replace(/[^0-9]/g, "");
     }
-    if (newPw) { body.current_upw = curPw; body.new_upw = newPw; }
+    // 본인확인(certify)은 완료 즉시 별도 저장되므로 여기(메인 저장)선 전송하지 않는다.
 
     setBusy(true);
     setMsg("저장 중…");
     try {
-      const r = await fetch("/mypage/edit/submit", {
+      const r = await fetch("/account/edit/submit", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       const data = await r.json();
       if (!data.ok) { setMsg(data.error || "수정에 실패했습니다."); return; }
-      router.replace("/mypage");
+      router.replace("/account/info");
       router.refresh();
     } catch {
       setMsg("통신 오류가 발생했습니다.");
@@ -102,9 +131,9 @@ export default function EditForm({ account, config }: Props) {
   const lockNote = <span className="ml-1 text-[12px] text-sub">(본인확인 정보)</span>;
 
   return (
-    <main className={cardCls}>
+    <div className={cardCls}>
       <h1 className="text-xl">회원정보 수정</h1>
-      {certified && <p className="mt-2 text-[13px] text-success">✓ 본인확인 회원 — 이름·생년월일·성별·휴대폰은 수정할 수 없습니다.</p>}
+      {shopCertify && <p className="mt-2 text-[13px] text-sub">본인확인 사용 쇼핑몰 — 이름·생년월일·성별·휴대폰은 본인확인으로만 변경됩니다.</p>}
 
       <div className={subjectCls}>회원정보</div>
 
@@ -114,21 +143,21 @@ export default function EditForm({ account, config }: Props) {
       </>)}
 
       {show("name") && (<>
-        <label className={labelCls}>이름{certified && lockNote}</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={50} readOnly={certified} className={fieldCls} />
+        <label className={labelCls}>이름{shopCertify && lockNote}</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={50} readOnly={shopCertify} className={fieldCls} />
       </>)}
 
       {show("birth") && (<>
-        <label className={labelCls}>생년월일{certified && lockNote}</label>
-        <input value={birth} onChange={(e) => setBirth(e.target.value)} type="date" readOnly={certified} className={fieldCls} />
+        <label className={labelCls}>생년월일{shopCertify && lockNote}</label>
+        <input value={birth} onChange={(e) => setBirth(e.target.value)} type="date" readOnly={shopCertify} className={fieldCls} />
       </>)}
 
       {show("gender") && (<>
-        <label className={labelCls}>성별{certified && lockNote}</label>
-        {certified ? (
+        <label className={labelCls}>성별{shopCertify && lockNote}</label>
+        {shopCertify ? (
           <input value={opt.gender.find((g) => String(g.value) === gender)?.label || ""} readOnly className={fieldCls} />
         ) : (
-          <select value={gender} onChange={(e) => setGender(e.target.value)} className={fieldCls}>
+          <select value={gender} onChange={(e) => setGender(e.target.value)} className={`${fieldCls} cursor-pointer pr-9`}>
             <option value="">선택</option>
             {opt.gender.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
           </select>
@@ -136,18 +165,46 @@ export default function EditForm({ account, config }: Props) {
       </>)}
 
       {show("hp") && (<>
-        <label className={labelCls}>휴대폰{certified && lockNote}</label>
-        <input value={hp} onChange={(e) => setHp(e.target.value)} placeholder="010-0000-0000" readOnly={certified} className={fieldCls} />
+        <label className={labelCls}>휴대폰{shopCertify && <span className="ml-1 text-[12px] text-sub">(본인확인 정보)</span>}</label>
+        {shopCertify ? (
+          // 본인확인 회원: 휴대폰은 본인확인으로만 변경 가능 → 재인증 버튼 제공.
+          <>
+            <div className="mt-2 flex items-center gap-2">
+              <input value={hp ? formatPhone(hp) : "미등록"} readOnly className={`${fieldCls} !mt-0 ${certifyApplied ? "border-accent text-accent" : ""}`} />
+              <button type="button" onClick={() => { setCertifyMsg(""); launchCertify(); }} className={inlineBtnCls}>
+                {certifyApplied ? "다시 인증" : "본인확인"}
+              </button>
+            </div>
+            {certifyMsg && <p className={`mt-1 text-[12px] ${certifyApplied ? "text-success" : "text-sale"}`}>{certifyMsg}</p>}
+            {!certifyApplied && <p className="mt-1 text-[12px] text-sub">번호가 바뀌었다면 본인확인을 다시 진행해 주세요.</p>}
+          </>
+        ) : needHpVerify ? (
+          // 인증 사용: 읽기전용 + "변경" 버튼 → 모달에서 변경완료 처리
+          <div className="mt-2 flex items-center gap-2">
+            <input value={hp ? formatPhone(hp) : "미등록"} readOnly className={`${fieldCls} !mt-0`} />
+            <button type="button" onClick={() => setModal("hp")} className={inlineBtnCls}>변경</button>
+          </div>
+        ) : (
+          <input value={formatPhone(hp)} onChange={(e) => setHp(e.target.value.replace(/\D/g, ""))} placeholder="010-0000-0000" className={fieldCls} />
+        )}
       </>)}
 
       {show("email") && (<>
         <label className={labelCls}>이메일</label>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" maxLength={50} className={fieldCls} />
+        {needEmailVerify ? (
+          // 인증 사용: 읽기전용 + "변경" 버튼 → 모달에서 변경완료 처리
+          <div className="mt-2 flex items-center gap-2">
+            <input value={email || "미등록"} readOnly className={`${fieldCls} !mt-0`} />
+            <button type="button" onClick={() => setModal("email")} className={inlineBtnCls}>변경</button>
+          </div>
+        ) : (
+          <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" maxLength={50} className={fieldCls} />
+        )}
       </>)}
 
       {show("tel") && (<>
         <label className={labelCls}>일반전화</label>
-        <input value={tel} onChange={(e) => setTel(e.target.value)} placeholder="02-000-0000" className={fieldCls} />
+        <input value={formatPhone(tel)} onChange={(e) => setTel(e.target.value.replace(/\D/g, ""))} placeholder="02-000-0000" className={fieldCls} />
       </>)}
 
       <div className="mt-3 flex flex-col gap-2">
@@ -177,7 +234,7 @@ export default function EditForm({ account, config }: Props) {
       {show("bank") && (<>
         <div className={subjectCls}>환불계좌</div>
         <label className={labelCls}>거래은행</label>
-        <select value={bank} onChange={(e) => setBank(e.target.value)} className={fieldCls}>
+        <select value={bank} onChange={(e) => setBank(e.target.value)} className={`${fieldCls} cursor-pointer pr-9`}>
           <option value="">선택</option>
           {opt.bank.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
         </select>
@@ -192,19 +249,10 @@ export default function EditForm({ account, config }: Props) {
         <textarea value={profile} onChange={(e) => setProfile(e.target.value)} maxLength={200} rows={3} className={`${fieldCls} resize-y`} />
       </>)}
 
-      {/* 비밀번호 변경 (선택) */}
-      <div className={subjectCls}>비밀번호 변경 (선택)</div>
-      <label className={labelCls}>현재 비밀번호</label>
-      <input value={curPw} onChange={(e) => setCurPw(e.target.value)} type="password" maxLength={20} autoComplete="current-password" className={fieldCls} />
-      <label className={labelCls}>새 비밀번호</label>
-      <input value={newPw} onChange={(e) => setNewPw(e.target.value)} type="password" maxLength={20} placeholder="변경 시에만 입력 (4자 이상)" autoComplete="new-password" className={fieldCls} />
-      <label className={labelCls}>새 비밀번호 확인</label>
-      <input value={newPw2} onChange={(e) => setNewPw2(e.target.value)} type="password" maxLength={20} autoComplete="new-password" className={fieldCls} />
-
       {msg && <div className="mt-3 text-[13px] text-sub">{msg}</div>}
 
       <div className="mt-5 flex gap-2">
-        <button type="button" onClick={() => router.push("/mypage")} className={`${bigBtnCls(true)} mt-0 flex-[0_0_35%] !bg-line !text-text`}>취소</button>
+        <button type="button" onClick={() => router.push("/account/info")} className={`${bigBtnCls(true)} mt-0 flex-[0_0_35%] !bg-line !text-text`}>취소</button>
         <button type="button" onClick={submit} disabled={busy} className={`${bigBtnCls(!busy)} mt-0 flex-1`}>{busy ? "저장 중…" : "저장"}</button>
       </div>
 
@@ -214,6 +262,22 @@ export default function EditForm({ account, config }: Props) {
           if (val) { setZipcode(val.zipcode); setAddr1(val.address); setAdmcode(val.admcode); setPlace(val.place); }
         }} />
       )}
-    </main>
+
+      {/* 휴대폰/이메일 변경 + 인증 모달 — 변경완료 시 해당 필드만 즉시 저장 후 랜딩폼 값 갱신 */}
+      {modal && (
+        <ContactVerifyModal
+          channel={modal === "hp" ? "sms" : "email"}
+          current={modal === "hp" ? hp : email}
+          onClose={(newValue) => {
+            if (newValue != null) {
+              if (modal === "hp") setHp(newValue);
+              else setEmail(newValue);
+              setMsg(`${modal === "hp" ? "휴대폰" : "이메일"}이 변경되었습니다.`);
+            }
+            setModal(null);
+          }}
+        />
+      )}
+    </div>
   );
 }

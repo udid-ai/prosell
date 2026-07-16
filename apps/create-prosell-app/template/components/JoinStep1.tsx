@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { MemberConfig } from "@/lib/prosell";
-import { Steps, shellCls, bigBtnCls, loadJoin, saveJoin, clearJoin, clearStep2 } from "./joinShared";
+import { Steps, joinOuterCls, joinContentCls, bigBtnCls, loadJoin, saveJoin, clearJoin, clearStep2 } from "./joinShared";
 import { useCertify, hasCertifyReturn } from "./useCertify";
 
 type Props = { config: MemberConfig | null };
@@ -100,7 +100,8 @@ export default function JoinStep1({ config }: Props) {
   }
 
   return (
-    <main className={shellCls}>
+    <div className={joinOuterCls}>
+      <div className={joinContentCls}>
       <Steps step={1} />
       <h1 className="text-xl">회원가입</h1>
       <p className="mt-2 text-[13px] text-sub">약관에 동의하고 본인확인을 진행해 주세요.</p>
@@ -114,25 +115,25 @@ export default function JoinStep1({ config }: Props) {
         <div className="mt-3 flex flex-col gap-2">
           <label className={rowCls}>
             <input type="checkbox" checked={agreeService} onChange={(e) => setAgreeService(e.target.checked)} />
-            <span>서비스 이용약관 동의 (필수)</span>
+            <span>(필수) 서비스 이용약관 동의</span>
             <a href="/terms/service" target="_blank" className="ml-auto text-[13px] text-accent">보기</a>
           </label>
           <label className={rowCls}>
             <input type="checkbox" checked={agreePrivacy} onChange={(e) => setAgreePrivacy(e.target.checked)} />
-            <span>개인정보수집 및 이용 동의 (필수)</span>
+            <span>(필수) 개인정보수집 및 이용 동의</span>
             <a href="/terms/privacy" target="_blank" className="ml-auto text-[13px] text-accent">보기</a>
           </label>
           <label className={rowCls}>
+            <input type="checkbox" checked={agreeAge} onChange={(e) => setAgreeAge(e.target.checked)} />
+            <span>(필수) 만 14세 이상입니다.</span>
+          </label>
+          <label className={rowCls}>
             <input type="checkbox" checked={emailReceive} onChange={(e) => setEmailReceive(e.target.checked)} />
-            <span>정보 메일 수신 동의 (선택)</span>
+            <span>(선택) 정보 메일 수신 동의</span>
           </label>
           <label className={rowCls}>
             <input type="checkbox" checked={hpReceive} onChange={(e) => setHpReceive(e.target.checked)} />
-            <span>정보 메시지 수신 동의 (선택)</span>
-          </label>
-          <label className={rowCls}>
-            <input type="checkbox" checked={agreeAge} onChange={(e) => setAgreeAge(e.target.checked)} />
-            <span>만 14세 이상입니다. (필수)</span>
+            <span>(선택) 정보 메시지 수신 동의</span>
           </label>
         </div>
       </div>
@@ -160,6 +161,7 @@ export default function JoinStep1({ config }: Props) {
       <p className="mt-4 text-[13px] text-sub">
         이미 계정이 있나요? <a href="/auth/login" className="text-accent">로그인</a>
       </p>
-    </main>
+      </div>
+    </div>
   );
 }

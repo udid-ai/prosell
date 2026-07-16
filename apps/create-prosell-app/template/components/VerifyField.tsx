@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { fieldCls, inlineBtnCls } from "./joinShared";
+import { formatPhone } from "@/lib/format";
 
 // 인증번호 발송/확인 공용 필드 (SMS·이메일 공용).
 // 품질 포인트: 진행 중 잠금(중복 클릭·경쟁 방지), 발송 후 대상 입력 잠금(번호/이메일 바꿔치기 방지),
@@ -108,9 +109,10 @@ export default function VerifyField(p: Props) {
     <>
       <div className="mt-2 flex items-center gap-2">
         <input
-          value={p.value}
-          onChange={(e) => p.onValue(e.target.value)}
+          value={p.channel === "sms" ? formatPhone(p.value) : p.value}
+          onChange={(e) => p.onValue(p.channel === "sms" ? e.target.value.replace(/\D/g, "") : e.target.value)}
           type={p.inputType ?? "text"}
+          inputMode={p.channel === "sms" ? "numeric" : undefined}
           maxLength={p.maxLength}
           placeholder={p.placeholder}
           readOnly={locked}

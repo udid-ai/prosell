@@ -5,7 +5,8 @@ import Link from "next/link";
 import type { CategoryNode } from "@/lib/prosell";
 
 // 모바일 전체화면 카테고리 시트. 항목 클릭 시 onClose 로 닫고 이동(Link).
-const cat = (code: string) => `/category/${encodeURIComponent(code)}`;
+// 카테고리 링크는 불변 id 기준(레거시와 동일).
+const cat = (id: number) => `/category/${id}`;
 
 export default function CategorySheet({
   tree,
@@ -45,8 +46,8 @@ export default function CategorySheet({
         role="dialog"
         aria-modal="true"
         aria-label="카테고리"
-        className={`absolute bottom-0 left-0 top-0 right-14 flex flex-col rounded-r-2xl bg-card shadow-2xl transition-transform duration-300 ${
-          open ? "translate-x-0" : "-translate-x-full"
+        className={`absolute bottom-0 left-0 top-0 right-14 flex flex-col rounded-r-2xl bg-card transition-transform duration-300 ${
+          open ? "translate-x-0 shadow-2xl" : "-translate-x-full"
         }`}
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
@@ -67,7 +68,7 @@ export default function CategorySheet({
           <Link
             href="/category"
             onClick={onClose}
-            className="mb-3 block rounded-lg bg-bg px-3 py-2.5 text-sm font-bold text-text"
+            className="mb-3 block rounded-lg bg-surface px-3 py-2.5 text-sm font-bold text-text"
           >
             전체상품 보기
           </Link>
@@ -76,7 +77,7 @@ export default function CategorySheet({
             {tree.map((c) => (
               <li key={c.id}>
                 <Link
-                  href={cat(c.code)}
+                  href={cat(c.id)}
                   onClick={onClose}
                   className="text-[15px] font-bold text-text hover:text-accent"
                 >
@@ -87,7 +88,7 @@ export default function CategorySheet({
                     {c.children.map((sub) => (
                       <Link
                         key={sub.id}
-                        href={cat(sub.code)}
+                        href={cat(sub.id)}
                         onClick={onClose}
                         className="rounded-full border border-line bg-card px-3 py-1.5 text-[13px] text-sub hover:border-accent hover:text-accent"
                       >

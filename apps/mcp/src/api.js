@@ -495,7 +495,8 @@ async function uploadFiles(path, fields, filePaths, fallback) {
     catch { throw new Error(`${fallback}: 파일을 읽을 수 없습니다 (${p})`); }
     form.append(`file${i++}`, new Blob([buf]), basename(p));
   }
-  const res = await fetch(`${apiBase()}/${path}`, { method: "POST", headers: await bearerHeaders(), body: form });
+  // 상품이미지와 동일하게 타임아웃을 건다(bare fetch 는 서버 지연 시 무한 대기 → 3분 멈춤 버그).
+  const res = await tfetch(`${apiBase()}/${path}`, { method: "POST", headers: await bearerHeaders(), body: form }, 60000, fallback);
   return jsonOrThrow(res, fallback);
 }
 
@@ -690,6 +691,40 @@ export async function uploadProductImages(field, { files, images, urls } = {}) {
   return jsonOrThrow(res, "상품 이미지 업로드 실패");
 }
 
+/** 첨부 업로드(원격 지원) — files(로컬경로)·images(base64)·urls(공개 URL) 혼용 가능.
+ *  커넥터형(원격)은 서버가 사용자 PC 파일을 못 읽으니 images(휴대폰 사진 base64)/urls 로 보낸다.
+ *  로컬 경로는 어떤 파일이든 그대로(문서 등), base64/URL 은 이미지로 검증(잘림 방지). max=최대 개수. */
+export async function uploadFilesFlex(path, { files, images, urls } = {}, fallback = "파일 업로드 실패", max = 3) {
+  const form = new FormData();
+  let n = 0;
+  const paths = files == null ? [] : Array.isArray(files) ? files : [files];
+  for (const p of paths) {
+    let buf;
+    try { buf = await readFile(p); }
+    catch { throw new Error(`${fallback}: 파일을 읽을 수 없습니다 (${p}). 원격 MCP면 로컬 경로 대신 images(base64)나 image_urls 로 보내세요.`); }
+    form.append(`file${n++}`, new Blob([buf]), basename(p));
+  }
+  for (const img of images || []) {
+    const b64 = img?.data ?? img?.data_base64;
+    if (!b64) continue;
+    let buf;
+    try { buf = Buffer.from(String(b64).replace(/^data:[^;]+;base64,/, ""), "base64"); }
+    catch { throw new Error(`${fallback}: base64 디코딩 오류`); }
+    const kind = assertImageBuffer(buf, "images(base64)");
+    form.append(`file${n++}`, new Blob([buf]), safeImageName(img.name, kind, n));
+  }
+  const urlList = urls == null ? [] : Array.isArray(urls) ? urls : [urls];
+  for (const url of urlList) {
+    const { buf, name } = await fetchRemoteImage(url);
+    const kind = imageKind(buf);
+    form.append(`file${n++}`, new Blob([buf]), safeImageName(name, kind, n));
+  }
+  if (n === 0) throw new Error(`${fallback}: 보낼 파일이 없습니다 (files / images / image_urls 중 하나 필요).`);
+  if (n > max) throw new Error(`${fallback}: 최대 ${max}개까지 올릴 수 있습니다.`);
+  const res = await tfetch(`${apiBase()}/${path}`, { method: "POST", headers: await bearerHeaders(), body: form }, 60000, fallback);
+  return jsonOrThrow(res, fallback);
+}
+
 // 카테고리
 export const listCategories = (params = {}) => getClient("categories", params, "카테고리 조회 실패");
 export const createCategory = (body) => postJson("categories", body, "카테고리 등록 실패");
@@ -794,7 +829,8 @@ export const createNotice = (body) => postJson("notice", body, "공지사항 등
 export const updateNotice = (id, body) => putById("notice", id, body, "공지사항 수정 실패");
 export const deleteNotice = (id) => deleteById("notice", id, "공지사항 삭제 실패");
 export const getNoticeSetup = () => getJson("notice/setup", {}, "공지사항 설정 조회 실패");
-export const uploadNoticeFiles = (files) => uploadFiles("notice/upload", {}, files, "공지사항 파일 업로드 실패");
+// 공지사항은 휴대폰 등 외부에서 base64/URL 로도 올릴 수 있게 flex 업로더 사용(원격 커넥터형 지원).
+export const uploadNoticeFiles = (opts) => uploadFilesFlex("notice/upload", opts, "공지사항 파일 업로드 실패", 3);
 
 export const listFaqs = (params = {}) => getClient("faq", params, "FAQ 조회 실패");
 export const createFaq = (body) => postJson("faq", body, "FAQ 등록 실패");

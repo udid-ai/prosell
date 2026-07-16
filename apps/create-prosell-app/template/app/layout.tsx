@@ -1,9 +1,15 @@
 import type { ReactNode } from "react";
+import localFont from "next/font/local";
 import "./globals.css";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
-import BottomNav from "@/components/BottomNav";
-import { fetchCategories } from "@/lib/prosell";
+
+// Pretendard 가변폰트(자체 호스팅) — next/font 로 최적화(preload·font-display swap·CLS 방지).
+// 가변폰트 1개 파일로 전 weight(45~920) 커버. CSS 변수 --font-pretendard 로 노출 → globals.css --font-sans 에서 사용.
+const pretendard = localFont({
+  src: "./fonts/PretendardVariable.woff2",
+  variable: "--font-pretendard",
+  display: "swap",
+  weight: "45 920",
+});
 
 export const metadata = {
   title: "프로셀 AI 스토어",
@@ -13,23 +19,15 @@ export const metadata = {
 // 첫 페인트 전에 테마 클래스를 적용 → 다크모드 깜빡임 방지.
 const noFlash = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark');}catch(e){}})();`;
 
-export default async function RootLayout({ children }: { children: ReactNode }) {
-  // Header 와 동일 fetch → 요청 메모이제이션으로 백엔드 호출은 1회. BottomNav(모바일 시트)에 전달.
-  const tree = await fetchCategories();
-
+// 루트 레이아웃 — html/body/공통(폰트·테마·globals)만. 헤더/푸터 등 크롬은 (main) 그룹,
+// 영수증 등 팝업은 (popup) 그룹이 각자의 레이아웃으로 담당한다.
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="ko" suppressHydrationWarning>
+    <html lang="ko" className={pretendard.variable} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: noFlash }} />
       </head>
-      <body className="m-0 bg-bg font-sans text-text antialiased">
-        <Header />
-        <div className="min-h-[60vh]">{children}</div>
-        <Footer />
-        {/* 모바일 플로팅 메뉴가 콘텐츠를 가리지 않도록 하단 여백 확보(데스크탑 0) */}
-        <div className="pb-safe h-20 md:hidden" aria-hidden />
-        <BottomNav tree={tree} />
-      </body>
+      <body className="m-0 bg-bg font-sans text-text antialiased">{children}</body>
     </html>
   );
 }

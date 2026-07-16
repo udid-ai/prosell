@@ -81,7 +81,7 @@ async function specFile(rel) {
 // 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
 // stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
 export function buildServer() {
-const server = new McpServer({ name: "prosell-mcp", version: "0.31.0" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.32.1" });
 
 // 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
 // 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
@@ -105,35 +105,50 @@ const fail = (msg) => ({ isError: true, content: [{ type: "text", text: String(m
 
 server.tool(
   "status",
-  "현재 연결 상태(쇼핑몰 URL, 인증 여부)를 확인한다.",
+  "현재 연결 상태(쇼핑몰 URL, 인증 여부)와 게시판 운영방식(board_type)을 확인한다. " +
+    "board_type=1(통합)이면 공지/문의/FAQ/후기를 board 도구로, 0(개별)이면 notices/faqs/reviews/문의 개별 도구로 처리한다.",
   {},
   async () => {
     try {
       const tok = tokens();
-      if (REMOTE) {
-        // 원격: 인증은 커넥터 OAuth 로 처리됨. 토큰 유무가 곧 연결 여부다(connect/login 불필요).
-        return ok({
-          shop: shopBase(),
-          mode: "remote",
-          connected: !!tok,
-          logged_in: !!tok,
-          note: tok
-            ? "커넥터 OAuth 로 인증됨 — connect/login 은 필요 없습니다. 관리 도구를 바로 사용하세요."
-            : "운영자 토큰이 없습니다. 커넥터를 다시 연결(재인증)하세요.",
-          list_expand: LIST_EXPAND,
-          detail_expand: DETAIL_EXPAND,
-        });
+      const base = REMOTE
+        ? {
+            shop: shopBase(),
+            mode: "remote",
+            connected: !!tok,
+            logged_in: !!tok,
+            note: tok
+              ? "커넥터 OAuth 로 인증됨 — connect/login 은 필요 없습니다. 관리 도구를 바로 사용하세요."
+              : "운영자 토큰이 없습니다. 커넥터를 다시 연결(재인증)하세요.",
+            list_expand: LIST_EXPAND,
+            detail_expand: DETAIL_EXPAND,
+          }
+        : (() => {
+            const creds = credentials();
+            return {
+              shop: shopBase(),
+              mode: "local",
+              connected: !!creds,          // connect 로 앱 자격증명 발급됨
+              client_id: creds?.client_id ?? null,
+              logged_in: !!tok,            // login 으로 운영자 토큰 보유(주문 관리 가능)
+              list_expand: LIST_EXPAND,
+              detail_expand: DETAIL_EXPAND,
+            };
+          })();
+      // 게시판 운영방식(개별/통합) — 인증돼 있으면 조회해 도구 라우팅 힌트를 준다(실패는 무시).
+      if (tok) {
+        try {
+          const setup = await getBoardSetup();
+          const bt = setup?.data?.board_type ?? setup?.board_type;
+          if (bt === 0 || bt === 1) {
+            base.board_type = bt;
+            base.board_tools = bt === 1
+              ? "통합형 — 공지/1:1문의/FAQ/상품문의/구매후기는 board 도구(board_type=notice|qna|faq|inquiry|review)로. 개별 도구(notices/faqs/reviews/문의)는 쓰지 말 것."
+              : "개별형 — 공지=notices, FAQ=faqs, 후기=reviews, 문의=product_inquiries/customer_inquiries 개별 도구로. board 도구는 쓰지 말 것.";
+          }
+        } catch { /* 게시판 설정 조회 실패는 상태 표시에 영향 주지 않음 */ }
       }
-      const creds = credentials();
-      return ok({
-        shop: shopBase(),
-        mode: "local",
-        connected: !!creds,            // connect 로 앱 자격증명 발급됨
-        client_id: creds?.client_id ?? null,
-        logged_in: !!tok,              // login 으로 운영자 토큰 보유(주문 관리 가능)
-        list_expand: LIST_EXPAND,
-        detail_expand: DETAIL_EXPAND,
-      });
+      return ok(base);
     } catch (e) {
       return fail(e.message);
     }
@@ -1217,7 +1232,8 @@ server.tool(
 // 운영자(admin) 토큰은 전체 문의를 조회하고, answer 로 답변(reply_content)을 등록한다.
 crudTool(
   "product_inquiries",
-  "상품문의 관리(운영자). action: list|answer|create|delete. " +
+  "상품문의 관리(운영자, 개별형 board_type=0 전용). action: list|answer|create|delete. " +
+    "⚠️통합형(status 의 board_type=1)이면 이 도구 대신 board 도구(board_type=inquiry)를 쓴다. " +
     "list 는 답변대기/완료 함께(각 항목 id·product_id·title·content·secret·reply_content; reply_content 비면 미답변). " +
     "answer 는 id+reply_content(로그인 운영자가 답변자로 자동 등록); 원문(title/content/secret) 수정도 가능. " +
     "create 는 product_id·title·content 필수(운영자 대리등록). delete 는 id 필수.",
@@ -1255,7 +1271,8 @@ crudTool(
 // ── 고객문의 (운영자) ────────────────────────────────────────────────────────
 crudTool(
   "customer_inquiries",
-  "고객문의(1:1 문의) 관리(운영자). action: list|answer|create|delete|setup|upload. " +
+  "고객문의(1:1 문의) 관리(운영자, 개별형 board_type=0 전용). action: list|answer|create|delete|setup|upload. " +
+    "⚠️통합형(status 의 board_type=1)이면 이 도구 대신 board 도구(board_type=qna)를 쓴다. " +
     "list 각 항목 id·category·title·content·reply_content·files(reply_content 비면 미답변). " +
     "answer 는 id+reply_content(운영자 자동 답변자); 원문(category/title/content/editor/files) 수정 가능. " +
     "create 는 item_type(0~4)·category·title·content 필수(회원 대리등록). setup 은 분류·첨부 제한 조회. " +
@@ -1302,7 +1319,8 @@ crudTool(
 // ── 상품평(리뷰) (운영자) ─────────────────────────────────────────────────────
 crudTool(
   "reviews",
-  "상품평(리뷰) 관리(운영자). action: list|answer|create|delete|setup|upload. " +
+  "상품평(리뷰) 관리(운영자, 개별형 board_type=0 전용). action: list|answer|create|delete|setup|upload. " +
+    "⚠️통합형(status 의 board_type=1)이면 이 도구 대신 board 도구(board_type=review)를 쓴다. " +
     "list 각 항목 id·product_id·score(1~5)·content·best·files·reply_content(비면 미답변); 별점/사진/상품 필터. " +
     "answer 는 id+reply_content(운영자 자동 답변자); 원문(content/score/best/files) 수정 가능. " +
     "create 는 prno·content·score 필수(회원 대리등록). setup 은 적립/기간/감정표현 조회. upload 는 사진(files, 최대 5).",
@@ -1346,10 +1364,12 @@ crudTool(
 // ── 공지사항 (운영자) ────────────────────────────────────────────────────────
 crudTool(
   "notices",
-  "공지사항 관리(운영자). action: list|create|update|delete|setup|upload. " +
+  "공지사항 관리(운영자, 개별형 board_type=0 전용). action: list|create|update|delete|setup|upload. " +
+    "⚠️쇼핑몰이 통합형(status 의 board_type=1)이면 이 도구가 아니라 board 도구(action=create, board_type=notice)를 써야 스토어프론트에 노출된다. " +
     "list 각 항목 id·category·title·content·dt·views·files(응답 fixeds=상단고정 id). " +
     "create 는 category·title·content 필수(작성자=로그인 운영자 자동), fixed=1 상단고정. update 는 id+바꿀 필드. " +
-    "setup 은 분류·첨부 제한 조회. upload 는 로컬파일(files, 최대 3)→items[].id 를 create/update 의 files 로.",
+    "setup 은 분류·첨부 제한 조회. upload 는 사진/파일을 올려 items[].id 를 받아 create/update 의 files 로 넣는다(최대 3). " +
+    "★upload 는 로컬 설치형이면 files(로컬경로), 휴대폰 등 외부(원격 커넥터형)면 images(사진 base64) 또는 image_urls(공개 URL)로 보낸다.",
   {
     list: ({ period_start, period_end, id, title, page, limit }) =>
       listNotices({ period_start, period_end, id, title, page, limit }),
@@ -1359,7 +1379,7 @@ crudTool(
       updateNotice(id, { category, title, content, fixed, files }),
     delete: ({ id }) => deleteNotice(id),
     setup: () => getNoticeSetup(),
-    upload: ({ files }) => uploadNoticeFiles(files),
+    upload: ({ files, images, image_urls }) => uploadNoticeFiles({ files, images, urls: image_urls }),
   },
   {
     period_start: z.string().optional().describe("(list) 시작일 YYYY-MM-DD"),
@@ -1372,13 +1392,19 @@ crudTool(
     content: z.string().optional().describe("create/update 내용(HTML 가능)"),
     fixed: z.number().int().min(0).max(1).optional().describe("create/update 1=상단고정"),
     files: z.array(z.union([z.number().int(), z.string()])).optional().describe("create/update=첨부 file id / upload=로컬파일 경로(최대 3)"),
+    image_urls: z.array(z.string().url()).max(3).optional().describe("(upload) 공개 이미지 URL 목록(http/https) — 외부/휴대폰에서 올릴 때"),
+    images: z.array(z.object({
+      data: z.string().describe("사진 바이트를 base64 로 인코딩한 문자열(data:...;base64, 접두어 허용)"),
+      name: z.string().optional().describe("파일명(확장자 포함, 예: 1.jpg)"),
+    })).max(3).optional().describe("(upload) 실제 사진 바이트의 base64 목록 — 원격/휴대폰에서 올릴 때. 잘못된/잘린 이미지는 거부됨"),
   }
 );
 
 // ── 자주묻는 질문(FAQ) (운영자) ───────────────────────────────────────────────
 crudTool(
   "faqs",
-  "FAQ(자주묻는 질문) 관리(운영자). action: list|create|update|delete|setup|upload. " +
+  "FAQ(자주묻는 질문) 관리(운영자, 개별형 board_type=0 전용). action: list|create|update|delete|setup|upload. " +
+    "⚠️통합형(status 의 board_type=1)이면 이 도구 대신 board 도구(board_type=faq)를 쓴다. " +
     "list 각 항목 id·category·title·content·views·files. create 는 category·title·content 필수(작성자=로그인 운영자 자동). " +
     "update 는 id+바꿀 필드. setup 은 분류·첨부 제한 조회. upload 는 로컬파일(files, 최대 3)→items[].id 를 create/update 의 files 로.",
   {
@@ -1618,8 +1644,9 @@ crudTool(
 // (board_type=0 기본형이면 기존 개별 도구 — list_notices/list_faqs/list_reviews/문의 도구 — 를 쓴다.)
 crudTool(
   "board",
-  "통합 게시판(board_type=1) 관리(운영자). action: setup|list|get|create|update|delete|answer|delete_reply|upload. " +
-    "⚠️board_type=0(기본형) 쇼핑몰이면 이 도구 대신 notices/faqs/reviews/product_inquiries/customer_inquiries 개별 도구를 쓴다. " +
+  "통합 게시판(board_type=1) 관리(운영자, 통합형 전용). action: setup|list|get|create|update|delete|answer|delete_reply|upload. " +
+    "⚠️먼저 status 로 board_type 을 확인하라. board_type=0(개별형) 쇼핑몰이면 이 도구 대신 notices/faqs/reviews/product_inquiries/customer_inquiries 개별 도구를 쓴다. " +
+    "(setup 응답의 board_type/unified 로도 확인 가능) " +
     "setup(게시판 코드·카테고리 확인) → list(5개 게시판 통합, board_types/카테고리/별점/states 필터) → get(상세+댓글). " +
     "create/update 는 board_type·title·content·writer_name 등(후기는 score 1~5, 상품문의/후기는 products_id/product_id). " +
     "answer 는 article_id+content(운영자 자동 답변, state=2). delete_reply 는 reply_id. upload 는 files(로컬, 최대5)→items[].id 를 photo(콤마구분)로.",

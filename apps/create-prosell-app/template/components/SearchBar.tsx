@@ -11,7 +11,7 @@ export default function SearchBar({ defaultValue = "", className = "" }: { defau
         defaultValue={defaultValue}
         placeholder="상품 검색"
         aria-label="상품 검색"
-        className="h-10 w-full rounded-full border border-line bg-bg pl-9 pr-4 text-sm text-text outline-none transition-colors placeholder:text-sub focus:border-accent focus:bg-card"
+        className="h-9 w-full rounded-full border border-line bg-surface pl-9 pr-4 text-[13px] text-text outline-none transition-colors placeholder:text-sub focus:border-accent focus:bg-card"
       />
     </form>
   );

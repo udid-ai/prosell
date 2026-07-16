@@ -3,14 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { MemberConfig } from "@/lib/prosell";
-import { Steps, shellCls, fieldCls, labelCls, inlineBtnCls, bigBtnCls, loadJoin, saveJoin, clearJoin } from "./joinShared";
+import { formatPhone } from "@/lib/format";
+import { passwordRule, validatePassword } from "@/lib/password";
+import { encryptPassword } from "@/lib/pwcryptoClient";
+import { Steps, joinOuterCls, joinContentCls, fieldCls, labelCls, inlineBtnCls, bigBtnCls, loadJoin, saveJoin, clearJoin } from "./joinShared";
 import Zipcode from "./Zipcode";
 import VerifyField from "./VerifyField";
 
 type Props = { config: MemberConfig | null };
 
-const subjectCls = "mb-1 mt-6 text-[13px] font-bold text-sub";
 const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+// 정보 그룹 박스 — 계정정보/회원정보/주소/환불계좌/부가정보를 동일한 카드 박스로 묶어 밸런스를 맞춘다.
+const groupCls = "mt-5 rounded-lg border border-line p-4 sm:p-5";
+const groupTitle = "mb-1 text-[14px] font-bold text-text";
 
 // 2단계: 가입 정보 입력 — 원본 join/form.php 항목 구성을 설정 기반으로 재현.
 // 필드 레벨: 0 숨김 / 1 선택 / 2이상 필수.
@@ -138,7 +143,7 @@ export default function JoinStep2({ config }: Props) {
     setMsg("");
     if (!uidIsEmail && uid.trim().length < 3) { setMsg("아이디를 3자 이상 입력해 주세요."); return; }
     if (!uidIsEmail && uidTaken === true) { setMsg("이미 사용 중인 아이디입니다."); return; }
-    if (upw.length < 4) { setMsg("비밀번호를 4자 이상 입력해 주세요."); return; }
+    { const e = validatePassword(upw, f.upw); if (e) { setMsg(e); return; } } // 쇼핑몰 비밀번호 규칙(req_upw)
     if (upw !== upwRe) { setMsg("비밀번호가 일치하지 않습니다."); return; }
     if (need("nick") && !nick.trim()) { setMsg("닉네임을 입력해 주세요."); return; }
     if (need("name") && !needCertify && !name.trim()) { setMsg("이름을 입력해 주세요."); return; }
@@ -156,10 +161,12 @@ export default function JoinStep2({ config }: Props) {
 
     setMsg("가입 처리 중…");
     const s = loadJoin();
+    // 비밀번호는 RSA 암호화 전송(평문 파라미터 노출 방지). 암호화 실패 시에만 평문 폴백.
+    const enc = await encryptPassword(upw);
     const r = await fetch("/auth/join/submit", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        uid: uid.trim(), upw,
+        uid: uid.trim(), ...(enc ? { enc_upw: enc } : { upw }),
         name: name.trim() || undefined, nick: nick.trim() || undefined,
         email: email.trim() || undefined, hp: hp.replace(/[^0-9]/g, "") || undefined,
         birth: birth.trim() || undefined, gender: gender ? Number(gender) : undefined,
@@ -181,20 +188,20 @@ export default function JoinStep2({ config }: Props) {
     clearJoin();
     // 자동 로그인 성공 시 곧장 마이페이지로, 아니면 완료 페이지(로그인 안내)로 이동.
     if (data.loggedIn) {
-      router.replace("/mypage");
+      router.replace("/account/info");
     } else {
       router.replace(`/auth/join/done?uid=${encodeURIComponent(data.uid || uid.trim())}`);
     }
     router.refresh();
   }
 
-  if (!ready) return <main className={shellCls}><Steps step={2} /></main>;
+  if (!ready) return <div className={joinOuterCls}><div className={joinContentCls}><Steps step={2} /></div></div>;
 
-  const hasExtra = show("bank") || show("interest") || show("profile") || show("recommend");
   const fileRequired = lvl("photo") >= 2 || lvl("file1") >= 2 || lvl("file2") >= 2;
 
   return (
-    <main className={shellCls}>
+    <div className={joinOuterCls}>
+      <div className={joinContentCls}>
       <Steps step={2} />
       <h1 className="text-xl">가입 정보 입력</h1>
       {certifyDone && (
@@ -209,130 +216,148 @@ export default function JoinStep2({ config }: Props) {
         </p>
       )}
 
-      {/* ── 계정정보 ── */}
-      <div className={subjectCls}>계정정보</div>
-      <label className={labelCls}>{uidIsEmail ? "이메일(아이디)" : "아이디"}{reqStar}</label>
-      {uidIsEmail && needEmailVerify ? (
-        <VerifyField channel="email" value={uid} onValue={setUid} placeholder="you@example.com" inputType="email" maxLength={50}
-          sendId={emailSendId} setSendId={setEmailSendId} code={emailCode} setCode={setEmailCode} done={emailDone} setDone={setEmailDone}
-          normalize={normEmail} validate={valEmail} />
-      ) : (
-        <input value={uid} onChange={(e) => { setUid(e.target.value); setUidTaken(null); }} onBlur={checkUidAvail} maxLength={50} placeholder={uidIsEmail ? "you@example.com" : "3~20자 영문/숫자"} className={fieldCls} />
-      )}
-      {!uidIsEmail && uidChecking && <p className="mt-1 text-[13px] text-sub">아이디 확인 중…</p>}
-      {!uidIsEmail && !uidChecking && uidTaken === true && <p className="mt-1 text-[13px] text-sale">이미 사용 중인 아이디입니다.</p>}
-      {!uidIsEmail && !uidChecking && uidTaken === false && <p className="mt-1 text-[13px] text-success">사용 가능한 아이디입니다.</p>}
-
-      <label className={labelCls}>비밀번호{reqStar}</label>
-      <input value={upw} onChange={(e) => setUpw(e.target.value)} type="password" minLength={4} maxLength={20} placeholder="4자 이상" className={fieldCls} />
-      <label className={labelCls}>비밀번호 확인{reqStar}</label>
-      <input value={upwRe} onChange={(e) => setUpwRe(e.target.value)} type="password" maxLength={20} className={fieldCls} />
-
-      {/* ── 회원정보 ── */}
-      <div className={subjectCls}>회원정보</div>
-
-      {show("nick") && (<>
-        <label className={labelCls}>닉네임{star("nick")}</label>
-        <input value={nick} onChange={(e) => setNick(e.target.value)} maxLength={20} className={fieldCls} />
-      </>)}
-
-      {show("name") && (<>
-        <label className={labelCls}>이름{star("name")}</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={50} readOnly={certifyLock && !!name} className={fieldCls} />
-      </>)}
-
-      {show("birth") && (<>
-        <label className={labelCls}>생년월일{star("birth")}</label>
-        <input value={birth} onChange={(e) => setBirth(e.target.value)} type="date" readOnly={certifyLock && !!birth} className={fieldCls} />
-      </>)}
-
-      {show("gender") && (<>
-        <label className={labelCls}>성별{star("gender")}</label>
-        {certifyLock && gender ? (
-          <input value={opt.gender.find((g) => String(g.value) === gender)?.label || ""} readOnly className={fieldCls} />
-        ) : (
-          <select value={gender} onChange={(e) => setGender(e.target.value)} className={fieldCls}>
-            <option value="">선택</option>
-            {opt.gender.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
-          </select>
-        )}
-      </>)}
-
-      {show("hp") && (<>
-        <label className={labelCls}>휴대폰{star("hp")}</label>
-        {needHpVerify ? (
-          <VerifyField channel="sms" value={hp} onValue={setHp} placeholder="010-0000-0000" inputType="tel"
-            sendId={hpSendId} setSendId={setHpSendId} code={hpCode} setCode={setHpCode} done={hpDone} setDone={setHpDone}
-            normalize={normPhone} validate={valPhone} />
-        ) : (
-          <input value={hp} onChange={(e) => setHp(e.target.value)} placeholder="010-0000-0000" readOnly={(certifyLock && !!hp) || hpDone} className={fieldCls} />
-        )}
-      </>)}
-
-      {show("email") && !uidIsEmail && (<>
-        <label className={labelCls}>이메일{star("email")}</label>
-        {needEmailVerify ? (
-          <VerifyField channel="email" value={email} onValue={setEmail} placeholder="you@example.com" inputType="email" maxLength={50}
+      {/* ── 계정정보 그룹 ── */}
+      <section className={groupCls}>
+        <h2 className={groupTitle}>계정정보</h2>
+        <label className={labelCls}>{uidIsEmail ? "이메일(아이디)" : "아이디"}{reqStar}</label>
+        {uidIsEmail && needEmailVerify ? (
+          <VerifyField channel="email" value={uid} onValue={setUid} placeholder="you@example.com" inputType="email" maxLength={50}
             sendId={emailSendId} setSendId={setEmailSendId} code={emailCode} setCode={setEmailCode} done={emailDone} setDone={setEmailDone}
             normalize={normEmail} validate={valEmail} />
         ) : (
-          <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" maxLength={50} className={fieldCls} />
+          <input value={uid} onChange={(e) => { setUid(e.target.value); setUidTaken(null); }} onBlur={checkUidAvail} maxLength={50} placeholder={uidIsEmail ? "you@example.com" : "3~20자 영문/숫자"} className={fieldCls} />
         )}
-      </>)}
+        {!uidIsEmail && uidChecking && <p className="mt-1 text-[13px] text-sub">아이디 확인 중…</p>}
+        {!uidIsEmail && !uidChecking && uidTaken === true && <p className="mt-1 text-[13px] text-sale">이미 사용 중인 아이디입니다.</p>}
+        {!uidIsEmail && !uidChecking && uidTaken === false && <p className="mt-1 text-[13px] text-success">사용 가능한 아이디입니다.</p>}
 
-      {show("tel") && (<>
-        <label className={labelCls}>일반전화{star("tel")}</label>
-        <input value={tel} onChange={(e) => setTel(e.target.value)} placeholder="02-000-0000" className={fieldCls} />
-      </>)}
+        <label className={labelCls}>비밀번호{reqStar}</label>
+        <input value={upw} onChange={(e) => setUpw(e.target.value)} type="password" minLength={passwordRule(f.upw).minLen} maxLength={20} placeholder={passwordRule(f.upw).hint} className={fieldCls} />
+        <label className={labelCls}>비밀번호 확인{reqStar}</label>
+        <input value={upwRe} onChange={(e) => setUpwRe(e.target.value)} type="password" maxLength={20} className={fieldCls} />
+      </section>
 
-      {show("addr") && (<>
-        <label className={labelCls}>우편번호{star("addr")}</label>
-        <div className="mt-2 flex items-center gap-2">
-          <input value={zipcode} readOnly placeholder="주소 검색을 눌러주세요" className={`${fieldCls} !mt-0`} />
-          <button type="button" onClick={() => setZipOpen(true)} className={inlineBtnCls}>주소 검색</button>
-        </div>
-        <label className={labelCls}>기본주소{star("addr")}</label>
-        <input value={addr1} readOnly placeholder="주소 검색으로 자동 입력" className={fieldCls} />
-        <label className={labelCls}>상세주소</label>
-        <input ref={addr2Ref} value={addr2} onChange={(e) => setAddr2(e.target.value)} maxLength={100} placeholder="동/호수 등" className={fieldCls} />
-      </>)}
+      {/* ── 회원정보 그룹 ── */}
+      {(show("nick") || show("name") || show("birth") || show("gender") || show("hp") || (show("email") && !uidIsEmail) || show("tel")) && (
+      <section className={groupCls}>
+        <h2 className={groupTitle}>회원정보</h2>
 
-      {/* ── 부가정보 ── */}
-      {hasExtra && <div className={subjectCls}>부가정보</div>}
+        {show("nick") && (<>
+          <label className={labelCls}>닉네임{star("nick")}</label>
+          <input value={nick} onChange={(e) => setNick(e.target.value)} maxLength={20} className={fieldCls} />
+        </>)}
 
-      {show("bank") && (<>
-        <label className={labelCls}>거래은행{star("bank")}</label>
-        <select value={bank} onChange={(e) => setBank(e.target.value)} className={fieldCls}>
-          <option value="">선택</option>
-          {opt.bank.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
-        </select>
-        <label className={labelCls}>계좌번호{star("bank")}</label>
-        <input value={banknum} onChange={(e) => setBanknum(e.target.value)} maxLength={100} className={fieldCls} />
-        <label className={labelCls}>예금주{star("bank")}</label>
-        <input value={bankholder} onChange={(e) => setBankholder(e.target.value)} maxLength={100} className={fieldCls} />
-      </>)}
+        {show("name") && (<>
+          <label className={labelCls}>이름{star("name")}</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={50} readOnly={certifyLock && !!name} className={fieldCls} />
+        </>)}
 
-      {show("interest") && opt.interest.length > 0 && (<>
-        <label className={labelCls}>관심분야{star("interest")}</label>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {opt.interest.map((it) => (
-            <label key={it.code} className="flex items-center gap-1 rounded-sm border border-line px-2 py-1 text-sm">
-              <input type="checkbox" checked={interest.includes(it.code)} onChange={() => toggleInterest(it.code)} />
-              {it.name}
-            </label>
-          ))}
-        </div>
-      </>)}
+        {show("birth") && (<>
+          <label className={labelCls}>생년월일{star("birth")}</label>
+          <input value={birth} onChange={(e) => setBirth(e.target.value)} type="date" readOnly={certifyLock && !!birth} className={fieldCls} />
+        </>)}
 
-      {show("profile") && (<>
-        <label className={labelCls}>자기소개{star("profile")}</label>
-        <textarea value={profile} onChange={(e) => setProfile(e.target.value)} maxLength={200} rows={3} className={`${fieldCls} resize-y`} />
-      </>)}
+        {show("gender") && (<>
+          <label className={labelCls}>성별{star("gender")}</label>
+          {certifyLock && gender ? (
+            <input value={opt.gender.find((g) => String(g.value) === gender)?.label || ""} readOnly className={fieldCls} />
+          ) : (
+            <select value={gender} onChange={(e) => setGender(e.target.value)} className={`${fieldCls} cursor-pointer pr-9`}>
+              <option value="">선택</option>
+              {opt.gender.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+            </select>
+          )}
+        </>)}
 
-      {show("recommend") && (<>
-        <label className={labelCls}>추천인 아이디</label>
-        <input value={recommend} onChange={(e) => setRecommend(e.target.value)} maxLength={50} className={fieldCls} />
-      </>)}
+        {show("hp") && (<>
+          <label className={labelCls}>휴대폰{star("hp")}</label>
+          {needHpVerify ? (
+            <VerifyField channel="sms" value={hp} onValue={setHp} placeholder="010-0000-0000" inputType="tel"
+              sendId={hpSendId} setSendId={setHpSendId} code={hpCode} setCode={setHpCode} done={hpDone} setDone={setHpDone}
+              normalize={normPhone} validate={valPhone} />
+          ) : (
+            <input value={formatPhone(hp)} onChange={(e) => setHp(e.target.value.replace(/\D/g, ""))} placeholder="010-0000-0000" inputMode="numeric" readOnly={(certifyLock && !!hp) || hpDone} className={fieldCls} />
+          )}
+        </>)}
+
+        {show("email") && !uidIsEmail && (<>
+          <label className={labelCls}>이메일{star("email")}</label>
+          {needEmailVerify ? (
+            <VerifyField channel="email" value={email} onValue={setEmail} placeholder="you@example.com" inputType="email" maxLength={50}
+              sendId={emailSendId} setSendId={setEmailSendId} code={emailCode} setCode={setEmailCode} done={emailDone} setDone={setEmailDone}
+              normalize={normEmail} validate={valEmail} />
+          ) : (
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" maxLength={50} className={fieldCls} />
+          )}
+        </>)}
+
+        {show("tel") && (<>
+          <label className={labelCls}>일반전화{star("tel")}</label>
+          <input value={formatPhone(tel)} onChange={(e) => setTel(e.target.value.replace(/\D/g, ""))} placeholder="02-000-0000" inputMode="numeric" className={fieldCls} />
+        </>)}
+      </section>
+      )}
+
+      {/* 주소 그룹 */}
+      {show("addr") && (
+        <section className={groupCls}>
+          <h2 className={groupTitle}>주소{star("addr")}</h2>
+          <label className={labelCls}>우편번호</label>
+          <div className="mt-2 flex items-center gap-2">
+            <input value={zipcode} readOnly placeholder="주소 검색을 눌러주세요" className={`${fieldCls} !mt-0`} />
+            <button type="button" onClick={() => setZipOpen(true)} className={inlineBtnCls}>주소 검색</button>
+          </div>
+          <label className={labelCls}>기본주소</label>
+          <input value={addr1} readOnly placeholder="주소 검색으로 자동 입력" className={fieldCls} />
+          <label className={labelCls}>상세주소</label>
+          <input ref={addr2Ref} value={addr2} onChange={(e) => setAddr2(e.target.value)} maxLength={100} placeholder="동/호수 등" className={fieldCls} />
+        </section>
+      )}
+
+      {/* 환불계좌 그룹 */}
+      {show("bank") && (
+        <section className={groupCls}>
+          <h2 className={groupTitle}>환불계좌 정보{star("bank")}</h2>
+          <label className={labelCls}>거래은행</label>
+          <select value={bank} onChange={(e) => setBank(e.target.value)} className={`${fieldCls} cursor-pointer pr-9`}>
+            <option value="">선택</option>
+            {opt.bank.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+          </select>
+          <label className={labelCls}>계좌번호</label>
+          <input value={banknum} onChange={(e) => setBanknum(e.target.value)} maxLength={100} className={fieldCls} />
+          <label className={labelCls}>예금주</label>
+          <input value={bankholder} onChange={(e) => setBankholder(e.target.value)} maxLength={100} className={fieldCls} />
+        </section>
+      )}
+
+      {/* 부가정보 그룹 — 관심분야/자기소개/추천인 */}
+      {(show("interest") || show("profile") || show("recommend")) && (
+        <section className={groupCls}>
+          <h2 className={groupTitle}>부가정보</h2>
+
+          {show("interest") && opt.interest.length > 0 && (<>
+            <label className={labelCls}>관심분야{star("interest")}</label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {opt.interest.map((it) => (
+                <label key={it.code} className="flex items-center gap-1 rounded-sm border border-line px-2 py-1 text-sm">
+                  <input type="checkbox" checked={interest.includes(it.code)} onChange={() => toggleInterest(it.code)} />
+                  {it.name}
+                </label>
+              ))}
+            </div>
+          </>)}
+
+          {show("profile") && (<>
+            <label className={labelCls}>자기소개{star("profile")}</label>
+            <textarea value={profile} onChange={(e) => setProfile(e.target.value)} maxLength={200} rows={3} className={`${fieldCls} resize-y`} />
+          </>)}
+
+          {show("recommend") && (<>
+            <label className={labelCls}>추천인 아이디</label>
+            <input value={recommend} onChange={(e) => setRecommend(e.target.value)} maxLength={50} className={fieldCls} />
+          </>)}
+        </section>
+      )}
 
       {msg && <div className="mt-3 text-[13px] text-sub">{msg}</div>}
 
@@ -350,6 +375,7 @@ export default function JoinStep2({ config }: Props) {
           }
         }} />
       )}
-    </main>
+      </div>
+    </div>
   );
 }

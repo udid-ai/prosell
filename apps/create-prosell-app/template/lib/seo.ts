@@ -20,9 +20,11 @@ export function buildMetadata(opts: {
   keywords?: string | null;
   image?: string | null;
   noindex?: boolean;
+  siteName?: string | null; // 쇼핑몰 연결 시 상호명으로 덮어쓰기(없으면 SITE_NAME)
 }): Metadata {
+  const site = (opts.siteName && String(opts.siteName).trim()) || SITE_NAME;
   const t = opts.title ? String(opts.title).trim() : "";
-  const title = t ? `${t} | ${SITE_NAME}` : SITE_NAME;
+  const title = t ? `${t} | ${site}` : site;
   const description = (opts.description || DEFAULT_DESC).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
   const image = absUrl(opts.image);
   const keywords = opts.keywords ? opts.keywords.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean) : undefined;
@@ -31,7 +33,7 @@ export function buildMetadata(opts: {
     description,
     keywords,
     openGraph: {
-      title, description, type: "website", siteName: SITE_NAME,
+      title, description, type: "website", siteName: site,
       images: image ? [{ url: image }] : undefined,
     },
     twitter: {

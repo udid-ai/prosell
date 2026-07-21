@@ -174,7 +174,12 @@ export async function fetchProducts(
     // 판매중(onoff=1) 상품만 목록 노출 — onoff=0(판매중지/숨김)은 제외(레거시 공개 목록과 동일).
     if (!u.searchParams.has("onoff")) u.searchParams.set("onoff", "1");
 
-    const res = await fetch(u.toString(), { headers: authHeaders(token), ...cacheOpt(token) });
+    let res = await fetch(u.toString(), { headers: authHeaders(token), ...cacheOpt(token) });
+    // 만료·무효 회원 토큰(예: 백엔드 재설치/토큰폐기 후 남은 쿠키)로 실패하면 비회원(client-id)으로 재시도 →
+    // «로그인된 것처럼 보이지만 실제로는 무효»한 상태에서도 상품 목록이 반드시 노출되도록 한다.
+    if (token && !res.ok) {
+      res = await fetch(u.toString(), { headers: authHeaders(undefined), ...cacheOpt(undefined) });
+    }
     if (!res.ok) return { total_count: 0, items: [] };
     return (await res.json()) as ProductList;
   } catch {
@@ -268,14 +273,19 @@ export type Account = {
 /** 로그인 회원의 전체 계정정보(origin/info/files)를 가져온다. */
 export async function fetchAccount(token: string): Promise<Account | null> {
   const e = env();
-  const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/user/account`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-    cache: "no-store",
-  });
-  if (!res.ok) return null;
-  const j = (await res.json().catch(() => null)) as { data?: Partial<Account> } | null;
-  const d = j?.data ?? {};
-  return { origin: d.origin ?? {}, info: d.info ?? {}, files: Array.isArray(d.files) ? d.files : [] };
+  if (!e.PROSELL_API_BASE || !token) return null;
+  try {
+    const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/user/account`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) return null; // 무효/만료 토큰이면 null → 호출부는 «비회원»으로 취급
+    const j = (await res.json().catch(() => null)) as { data?: Partial<Account> } | null;
+    const d = j?.data ?? {};
+    return { origin: d.origin ?? {}, info: d.info ?? {}, files: Array.isArray(d.files) ? d.files : [] };
+  } catch {
+    return null;
+  }
 }
 
 export type AccountUpdate = {
@@ -1039,10 +1049,17 @@ export async function fetchProductView(id: string, token?: string): Promise<Prod
   const e = env();
   if (!e.PROSELL_API_BASE) return null;
   try {
-    const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/products/view/${encodeURIComponent(id)}`, {
+    let res = await fetch(`${e.PROSELL_API_BASE}/api/v2/products/view/${encodeURIComponent(id)}`, {
       headers: authHeaders(token),
       ...cacheOpt(token),
     });
+    // 무효 회원 토큰이면 비회원(client-id)으로 재시도 → 상세도 정상 노출(비회원 공개가).
+    if (token && !res.ok) {
+      res = await fetch(`${e.PROSELL_API_BASE}/api/v2/products/view/${encodeURIComponent(id)}`, {
+        headers: authHeaders(undefined),
+        ...cacheOpt(undefined),
+      });
+    }
     if (!res.ok) return null;
     const j = (await res.json().catch(() => null)) as { data?: ProductView } | null;
     return j?.data ?? null;

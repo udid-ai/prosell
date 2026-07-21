@@ -1,6 +1,6 @@
 {
   "name": "prosell",
-  "version": "0.32.2",
+  "version": "0.32.3",
   "description": "Prosell 쇼핑몰 MCP 서버 — API 명세(resources) + 상품/주문 관리(tools) + AI 연결 자동등록(connect)",
   "license": "MIT",
   "type": "module",

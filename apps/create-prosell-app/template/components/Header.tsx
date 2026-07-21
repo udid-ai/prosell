@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { getToken, fetchCategories, fetchAccount } from "@/lib/prosell";
+import { getToken, fetchCategories, fetchAccount, fetchFooter } from "@/lib/prosell";
+import { SITE_NAME } from "@/lib/seo";
 import ThemeToggle from "./ThemeToggle";
 import CategoryNav from "./CategoryNav";
 import SearchBar from "./SearchBar";
@@ -9,10 +10,14 @@ import { CartIcon, UserIcon } from "./icons";
 // 반응형 헤더 — 데스크탑: 로고 | 검색 | 액션 + 카테고리바.  모바일: 로고 | 액션 / 검색줄.
 // 초기 렌더에서 토큰·카테고리를 병렬 1회 조회(카테고리는 ISR 5분 캐시).
 export default async function Header() {
-  const [token, tree] = await Promise.all([getToken(), fetchCategories()]);
-  const loggedIn = !!token;
-  // 로그인 시 표시할 성명(내정보 아이콘 왼쪽). 없으면 닉네임/아이디로 폴백.
-  const account = loggedIn ? await fetchAccount(token) : null;
+  const [token, tree, footer] = await Promise.all([getToken(), fetchCategories(), fetchFooter()]);
+  // 로고(상호) — 쇼핑몰 연결 시 shop/footer 의 service(상호명)로 표기, 없으면 사이트 기본명.
+  const shopName = footer?.service || SITE_NAME;
+  // 로그인 판정은 «토큰 쿠키 존재»가 아니라 «계정 조회 성공(유효 토큰)» 기준.
+  //  → 만료·무효 토큰(예: 백엔드 재설치/다른 앱 잔여 쿠키)으로 «가짜 로그인» 표시되어
+  //    회원 Bearer 로 상품 조회가 실패하던 문제 방지. 무효면 비회원 UI로 표시.
+  const account = token ? await fetchAccount(token) : null;
+  const loggedIn = !!account;
   const memberName = account
     ? String(account.origin.name || account.origin.nick || account.origin.uid || "").trim()
     : "";
@@ -25,7 +30,7 @@ export default async function Header() {
       {/* 상단 바 */}
       <div className="mx-auto flex max-w-content items-center gap-3 px-4 py-3 md:gap-6">
         <Link href="/" className="shrink-0 text-[18px] font-extrabold tracking-tight text-text">
-          프로셀
+          {shopName}
         </Link>
 
         {/* 데스크탑 검색 (가운데) */}

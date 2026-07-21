@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { fetchProducts, fetchBestReviews, getToken } from "@/lib/prosell";
+import { fetchProducts, fetchBestReviews, fetchFooter, getToken } from "@/lib/prosell";
 import ProductListing from "@/components/ProductListing";
 import ProductCard from "@/components/ProductCard";
 import ProductSwiper from "@/components/ProductSwiper";
@@ -9,7 +9,11 @@ import { buildMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = buildMetadata({ description: "다양한 상품을 만나보세요." });
+// 홈 타이틀도 연결된 쇼핑몰 상호명(shop/footer.service)으로 — 고정 "프로셀 AI 스토어" 대신.
+export async function generateMetadata() {
+  const footer = await fetchFooter();
+  return buildMetadata({ description: "다양한 상품을 만나보세요.", siteName: footer?.service });
+}
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ page?: string; order?: string; limit?: string }> }) {
   const sp = await searchParams;

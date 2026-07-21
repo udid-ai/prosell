@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loginMember, clientIpFromHeaders, mergeServerCart, memberCartOwner, setAuthCookies } from "@/lib/prosell";
+import { loginMember, clientIpFromHeaders, mergeServerCart, memberCartOwner, setAuthCookies, stampMemberName } from "@/lib/prosell";
 import { resolvePassword } from "@/lib/pwcrypto";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   const secure = (req.headers.get("x-forwarded-proto") || req.nextUrl.protocol.replace(/:$/, "")) === "https";
   const res = NextResponse.json({ ok: true, uid: r.uid, mid: r.mid });
   setAuthCookies(res, r, secure);
+  await stampMemberName(res, r, secure); // 표시이름 pa_name 쿠키(헤더가 매 페이지 fetchAccount 없이 읽음)
 
   // 비회원 장바구니 → 회원 장바구니 이전(레거시 updateLogin 의 cart 이전에 대응).
   // 게스트 cart_id 행을 회원 owner(member_<mid>)로 합치고, 이후 cart_id 쿠키를 회원 owner 로 전환.

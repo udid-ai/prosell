@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { RT, refreshMember, setAuthCookies } from "@/lib/prosell";
+import { RT, NAME, refreshMember, setAuthCookies, setMemberNameCookie, stampMemberName } from "@/lib/prosell";
 
 export const dynamic = "force-dynamic";
 
@@ -21,5 +21,10 @@ export async function POST(req: NextRequest) {
   const secure = (req.headers.get("x-forwarded-proto") || req.nextUrl.protocol.replace(/:$/, "")) === "https";
   const res = NextResponse.json({ ok: true, exp: Date.now() + (r.expires_in ?? 10800) * 1000 });
   setAuthCookies(res, r, secure);
+  // 표시이름 쿠키 유지 — 기존 값 있으면 수명만 연장(재조회 없음), 없으면 1회 조회해 심는다.
+  const rtMaxAge = typeof r.refresh_token_expires_in === "number" && r.refresh_token_expires_in > 0 ? r.refresh_token_expires_in : 2592000;
+  const existingName = c.get(NAME)?.value;
+  if (existingName) setMemberNameCookie(res, decodeURIComponent(existingName), secure, rtMaxAge);
+  else await stampMemberName(res, r, secure);
   return res;
 }

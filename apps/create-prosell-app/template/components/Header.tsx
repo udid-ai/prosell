@@ -1,6 +1,6 @@
 import { Suspense, cache } from "react";
 import Link from "next/link";
-import { getToken, fetchCategories, fetchAccount, fetchFooter } from "@/lib/prosell";
+import { getToken, getMemberName, fetchCategories, fetchAccount, fetchFooter } from "@/lib/prosell";
 import { SITE_NAME } from "@/lib/seo";
 import ThemeToggle from "./ThemeToggle";
 import CategoryNav from "./CategoryNav";
@@ -9,18 +9,21 @@ import CartBadge from "./CartBadge";
 import { CartIcon, UserIcon } from "./icons";
 
 // 반응형 헤더 — 데스크탑: 로고 | 검색 | 액션 + 카테고리바.  모바일: 로고 | 액션 / 검색줄.
-// 셸(로고·검색·카테고리·장바구니·테마)은 즉시 렌더하고, «계정 이름/인증 버튼»만 <Suspense> 로 분리해 스트리밍한다.
-//  → 회원 fetchAccount(no-store) 왕복이 헤더(=모든 페이지 셸)를 블로킹하지 않게 해 회원 페이지 지연을 제거.
-//  → 로그인 판정은 여전히 «계정 조회 성공» 기준(스트리밍 영역 안) → 만료·무효 토큰의 «가짜 로그인» 방지 유지.
+// 회원 «N님»은 로그인·갱신 시 심어둔 pa_name 쿠키에서 즉시 읽는다(매 페이지 fetchAccount 왕복 제거).
+//  → 쿠키가 없는 «구(舊) 세션» 등에서만 fetchAccount 를 <Suspense> 로 스트리밍(논블로킹) 폴백.
+//  → 로그인 판정도 이 흐름을 따르므로 만료·무효 토큰의 «가짜 로그인» 은 상품 조회 폴백으로 이미 방어됨.
 
-// 한 요청 안에서 두 스트리밍 컴포넌트가 같은 토큰으로 계정을 각각 부르지 않도록 dedupe.
+// 폴백 경로에서 두 스트리밍 컴포넌트가 같은 토큰으로 계정을 각각 부르지 않도록 dedupe.
 const getAccountCached = cache(async (t: string) => fetchAccount(t));
 
-// «홍길동 님» — 계정 조회 성공(유효 토큰) 시에만. 실패/무효면 아무것도 안 보임.
 async function HeaderMemberName({ token }: { token: string }) {
   const account = await getAccountCached(token);
   const name = account ? String(account.origin.name || account.origin.nick || account.origin.uid || "").trim() : "";
   if (!name) return null;
+  return <MemberNameLink name={name} />;
+}
+
+function MemberNameLink({ name }: { name: string }) {
   return (
     <Link href="/account" className="mr-1 hidden max-w-[140px] truncate text-sm text-text hover:text-accent sm:block">
       <b className="font-semibold">{name}</b> 님
@@ -28,7 +31,19 @@ async function HeaderMemberName({ token }: { token: string }) {
   );
 }
 
-// 인증 버튼 영역 — 회원(유효 토큰): 로그아웃 / 비회원·무효 토큰: 로그인·회원가입.
+function LogoutArea() {
+  return (
+    <>
+      <span className="mx-1 hidden h-5 w-px bg-line md:block" />
+      <form action="/auth/logout" method="post" className="m-0 hidden md:block">
+        <button type="submit" className="cursor-pointer rounded-full border-0 bg-transparent px-2 py-1 text-sm text-sub hover:text-accent">
+          로그아웃
+        </button>
+      </form>
+    </>
+  );
+}
+
 function GuestAuth() {
   return (
     <>
@@ -42,24 +57,15 @@ function GuestAuth() {
   );
 }
 
+// pa_name 쿠키가 없는 세션의 인증 버튼 폴백 — 계정 조회 성공 시 로그아웃, 실패(무효 토큰) 시 비회원.
 async function HeaderAuthArea({ token }: { token: string }) {
   const account = await getAccountCached(token);
-  if (!account) return <GuestAuth />; // 무효/만료 토큰 → 비회원 UI
-  return (
-    <>
-      <span className="mx-1 hidden h-5 w-px bg-line md:block" />
-      <form action="/auth/logout" method="post" className="m-0 hidden md:block">
-        <button type="submit" className="cursor-pointer rounded-full border-0 bg-transparent px-2 py-1 text-sm text-sub hover:text-accent">
-          로그아웃
-        </button>
-      </form>
-    </>
-  );
+  return account ? <LogoutArea /> : <GuestAuth />;
 }
 
 export default async function Header() {
-  // 셸에 필요한 값만 대기(모두 캐시·쿠키라 가벼움). 무거운 fetchAccount 는 아래 Suspense 로 분리.
-  const [token, tree, footer] = await Promise.all([getToken(), fetchCategories(), fetchFooter()]);
+  // 셸에 필요한 값만 대기(모두 캐시·쿠키라 가벼움). 회원 이름은 pa_name 쿠키에서 즉시.
+  const [token, name, tree, footer] = await Promise.all([getToken(), getMemberName(), fetchCategories(), fetchFooter()]);
   const shopName = footer?.service || SITE_NAME; // 로고(상호) — 없으면 사이트 기본명.
 
   const iconBtn =
@@ -80,8 +86,10 @@ export default async function Header() {
 
         {/* 액션 */}
         <nav className="ml-auto flex items-center gap-1">
-          {/* 회원 이름 — 계정 조회를 기다리지 않고 스트리밍(도착 전엔 미표시) */}
-          {token ? (
+          {/* 회원 이름 — pa_name 쿠키 있으면 즉시, 없고 토큰만 있으면 스트리밍 폴백 */}
+          {name ? (
+            <MemberNameLink name={name} />
+          ) : token ? (
             <Suspense fallback={null}>
               <HeaderMemberName token={token} />
             </Suspense>
@@ -100,8 +108,10 @@ export default async function Header() {
           </Link>
           <ThemeToggle />
 
-          {/* 인증 버튼 — 비회원은 즉시, 회원(토큰)은 계정 확인 후 스트리밍(도착 전엔 미표시) */}
-          {token ? (
+          {/* 인증 버튼 — 이름 쿠키 있으면 로그아웃 즉시, 토큰만 있으면 스트리밍 폴백, 비회원은 즉시 */}
+          {name ? (
+            <LogoutArea />
+          ) : token ? (
             <Suspense fallback={null}>
               <HeaderAuthArea token={token} />
             </Suspense>

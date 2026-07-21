@@ -41,6 +41,33 @@ export function setAuthCookies(
   res.cookies.set(EXP, String(Date.now() + ttl * 1000), { httpOnly: false, path: "/", sameSite: "lax", secure, maxAge: rtMaxAge });
 }
 
+// 회원 표시이름 캐시 쿠키 — 헤더 «N님»을 매 페이지 fetchAccount 없이 표시하기 위한 값.
+// 개인 식별자 아닌 «표시명»만 담고(비-httpOnly), 로그인/가입/갱신 시 1회 조회해 심는다.
+export const NAME = "pa_name";
+
+/** account 에서 표시이름(이름>닉네임>아이디) 도출. */
+export function memberDisplayName(account: Account | null): string {
+  if (!account) return "";
+  return String(account.origin.name || account.origin.nick || account.origin.uid || "").trim();
+}
+
+/** 표시이름 쿠키 세팅(RT 수명과 동일하게 유지). 빈 이름이면 세팅하지 않음. */
+export function setMemberNameCookie(res: NextResponse, name: string, secure: boolean, maxAge: number): void {
+  if (!name) return;
+  res.cookies.set(NAME, encodeURIComponent(name), { httpOnly: false, path: "/", sameSite: "lax", secure, maxAge });
+}
+
+/** 로그인/가입/소셜 시 표시이름을 «한 번» 조회해 pa_name 쿠키로 심는다(이후 전 페이지 헤더는 쿠키만 읽음). */
+export async function stampMemberName(
+  res: NextResponse,
+  t: { access_token: string; refresh_token_expires_in?: number },
+  secure: boolean,
+): Promise<void> {
+  const maxAge = typeof t.refresh_token_expires_in === "number" && t.refresh_token_expires_in > 0 ? t.refresh_token_expires_in : RT_MAXAGE_FALLBACK;
+  const account = await fetchAccount(t.access_token);
+  setMemberNameCookie(res, memberDisplayName(account), secure, maxAge);
+}
+
 type Env = {
   PROSELL_API_BASE: string; // 예: https://{쇼핑몰아이디}.prosell.kr
   PROSELL_AUTH_BASE?: string; // 브라우저가 닿는 base (로컬 도커처럼 호스트가 갈릴 때)
@@ -57,6 +84,13 @@ export function env(): Env {
 export async function getToken(): Promise<string | undefined> {
   const c = await cookies();
   return c.get(AT)?.value;
+}
+
+/** 헤더 «N님» 표시용 캐시 이름(pa_name 쿠키). 없으면 빈 문자열 → 헤더가 fetchAccount 폴백. */
+export async function getMemberName(): Promise<string> {
+  const c = await cookies();
+  const v = c.get(NAME)?.value;
+  return v ? decodeURIComponent(v) : "";
 }
 
 /** 비회원 주문조회로 발급된 guest 토큰. 회원 미로그인 상태의 주문 관련 조회에 사용. */

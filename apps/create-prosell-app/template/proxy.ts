@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 const AT = "pa_at"; // access token 쿠키
 const RT = "pa_rt"; // refresh token 쿠키
 const EXP = "pa_exp"; // 만료 힌트(비-httpOnly) — 클라이언트 SessionKeeper 스케줄용
+const NAME = "pa_name"; // 표시이름 캐시(비-httpOnly) — 헤더 «N님» 용. 여기선 수명만 연장(재조회 없음).
 
 export async function proxy(req: NextRequest) {
   const at = req.cookies.get(AT)?.value;
@@ -62,6 +63,9 @@ export async function proxy(req: NextRequest) {
     res.cookies.set(RT, newRt, { httpOnly: true, path: "/", sameSite: "lax", secure, maxAge: rtMaxAge });
     // 만료 힌트(실제 만료 epoch ms) — 클라이언트 SessionKeeper 가 읽어 선제 갱신 스케줄
     res.cookies.set(EXP, String(Date.now() + expiresIn * 1000), { httpOnly: false, path: "/", sameSite: "lax", secure, maxAge: rtMaxAge });
+    // 표시이름 쿠키가 있으면 RT 수명에 맞춰 연장(엣지라 재조회는 안 함 — 로그인/갱신 라우트가 최초 심음).
+    const name = req.cookies.get(NAME)?.value;
+    if (name) res.cookies.set(NAME, name, { httpOnly: false, path: "/", sameSite: "lax", secure, maxAge: rtMaxAge });
     return res;
   } catch {
     return NextResponse.next();

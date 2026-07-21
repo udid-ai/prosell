@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { AT, RT, EXP } from "@/lib/prosell";
+import { AT, RT, EXP, NAME } from "@/lib/prosell";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +13,7 @@ export async function POST(req: Request) {
   res.cookies.delete(AT);
   res.cookies.delete(RT);
   res.cookies.delete(EXP); // 만료 힌트 제거 → SessionKeeper 갱신 중단
+  res.cookies.delete(NAME); // 표시이름 캐시 제거
   res.cookies.delete("cart_id"); // 회원 장바구니 owner 쿠키 제거 → 다음 방문은 새 게스트 장바구니
   return res;
 }

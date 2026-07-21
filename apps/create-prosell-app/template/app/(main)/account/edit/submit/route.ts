@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getToken, updateAccount, type AccountUpdate } from "@/lib/prosell";
+import { getToken, updateAccount, stampMemberName, type AccountUpdate } from "@/lib/prosell";
 import { decryptPassword } from "@/lib/pwcrypto";
 
 export const dynamic = "force-dynamic";
@@ -23,5 +23,11 @@ export async function POST(req: NextRequest) {
   }
 
   const r = await updateAccount(token, b);
-  return NextResponse.json(r, { status: r.ok ? 200 : 400 });
+  const res = NextResponse.json(r, { status: r.ok ? 200 : 400 });
+  // 이름/닉네임이 바뀌었을 수 있으니 성공 시 표시이름 쿠키 갱신.
+  if (r.ok) {
+    const secure = (req.headers.get("x-forwarded-proto") || req.nextUrl.protocol.replace(/:$/, "")) === "https";
+    await stampMemberName(res, { access_token: token }, secure);
+  }
+  return res;
 }

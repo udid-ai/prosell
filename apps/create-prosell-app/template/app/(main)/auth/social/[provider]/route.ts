@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { socialLogin, clientIpFromHeaders, mergeServerCart, memberCartOwner, setAuthCookies } from "@/lib/prosell";
+import { socialLogin, clientIpFromHeaders, mergeServerCart, memberCartOwner, setAuthCookies, stampMemberName } from "@/lib/prosell";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +44,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ provider: s
 
   const res = NextResponse.redirect(origin + "/");
   setAuthCookies(res, r, secure);
+  await stampMemberName(res, r, secure);
   res.cookies.delete(SST);
 
   // 비회원 장바구니 → 회원 장바구니 이전 (비밀번호 로그인과 동일)

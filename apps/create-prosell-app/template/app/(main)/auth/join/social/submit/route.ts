@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { completeSocialSignup, clientIpFromHeaders, mergeServerCart, memberCartOwner, setAuthCookies, type SocialCompleteInput } from "@/lib/prosell";
+import { completeSocialSignup, clientIpFromHeaders, mergeServerCart, memberCartOwner, setAuthCookies, stampMemberName, type SocialCompleteInput } from "@/lib/prosell";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
   const secure = proto === "https";
   const res = NextResponse.json({ ok: true });
   setAuthCookies(res, r, secure);
+  await stampMemberName(res, r, secure);
   res.cookies.delete(SWAIT);
 
   // 비회원 장바구니 → 회원 장바구니 이전(로그인과 동일)

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { signup, loginMember, clientIpFromHeaders, setAuthCookies, type SignupInput } from "@/lib/prosell";
+import { signup, loginMember, clientIpFromHeaders, setAuthCookies, stampMemberName, type SignupInput } from "@/lib/prosell";
 import { resolvePassword } from "@/lib/pwcrypto";
 
 export const dynamic = "force-dynamic";
@@ -62,5 +62,6 @@ export async function POST(req: NextRequest) {
   const secure = (req.headers.get("x-forwarded-proto") || req.nextUrl.protocol.replace(/:$/, "")) === "https";
   const res = NextResponse.json({ ok: true, uid: login.uid, mid: login.mid, loggedIn: true });
   setAuthCookies(res, login, secure);
+  await stampMemberName(res, login, secure);
   return res;
 }

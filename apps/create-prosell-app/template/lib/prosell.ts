@@ -1826,7 +1826,12 @@ export async function getCheckoutSession(auth: CheckoutAuth, oid: string, admcod
       method: "GET", cache: "no-store", headers: checkoutHeaders(auth),
     });
     const j = await res.json().catch(() => null);
-    return res.ok && j?.data ? (j.data as CheckoutSession) : null;
+    const data = res.ok && j?.data ? (j.data as CheckoutSession) : null;
+    // 품목 이미지 호스트를 CDN(cdnpro.kr)으로 정규화.
+    if (data && Array.isArray(data.items)) {
+      data.items = data.items.map((it) => ({ ...it, thumb: imgUrl(it.thumb) ?? it.thumb }));
+    }
+    return data;
   } catch { return null; }
 }
 
@@ -1886,7 +1891,12 @@ export async function getOrderResult(auth: CheckoutAuth, pno: string): Promise<O
       method: "GET", cache: "no-store", headers: checkoutHeaders(auth),
     });
     const j = await res.json().catch(() => null);
-    return res.ok && j?.data ? (j.data as OrderResult) : null;
+    const data = res.ok && j?.data ? (j.data as OrderResult) : null;
+    // 품목 이미지 호스트를 CDN(cdnpro.kr)으로 정규화.
+    if (data && Array.isArray(data.items)) {
+      data.items = data.items.map((it) => ({ ...it, thumb: it.thumb ? (imgUrl(it.thumb) ?? it.thumb) : it.thumb }));
+    }
+    return data;
   } catch { return null; }
 }
 

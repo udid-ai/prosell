@@ -1062,7 +1062,15 @@ export async function fetchProductView(id: string, token?: string): Promise<Prod
     }
     if (!res.ok) return null;
     const j = (await res.json().catch(() => null)) as { data?: ProductView } | null;
-    return j?.data ?? null;
+    const data = j?.data ?? null;
+    if (data) {
+      // 이미지 호스트 정규화 — 갤러리/상세본문 이미지도 CDN(cdnpro.kr)으로.
+      if (Array.isArray(data.gallery)) {
+        data.gallery = data.gallery.map((g) => ({ src: imgUrl(g.src) ?? g.src, thumb: imgUrl(g.thumb) ?? g.thumb }));
+      }
+      if (typeof data.detail_html === "string") data.detail_html = rewriteContent(data.detail_html);
+    }
+    return data;
   } catch {
     return null;
   }
@@ -1528,25 +1536,34 @@ export function priceOf(it: ProductItem): { price?: number; base?: number } {
   return { price: sale, base };
 }
 
+// 운영 이미지 호스트 정규화 — 이미지 정적파일은 CDN({shopid}.cdnpro.kr)에서 서빙한다.
+// API 는 {shopid}.prosell.kr/upload/... 로 주기도 하므로, /upload 경로의 prosell.kr 호스트를 cdnpro.kr 로 치환.
+// (프로토콜-상대·http/https 모두 대응. 커스텀 도메인은 건드리지 않음.)
+function toCdnHost(u: string): string {
+  return u.replace(/(:?\/\/)([a-z0-9-]+)\.prosell\.kr(?=\/upload)/gi, "$1$2.cdnpro.kr");
+}
+
 /**
  * 이미지 URL 정규화.
  *  - 로컬 도커: prosell 이 //{shop_id}.cdnpro.kr/... 로 주는데 그 CDN엔 파일이 없음.
  *    실제 파일은 로컬 nginx 에 있으므로 호스트를 PROSELL_IMAGE_BASE 로 치환.
- *  - 운영: PROSELL_IMAGE_BASE 미설정 → protocol-relative(//) 만 https 로 보정하고 원본 유지.
+ *  - 운영: PROSELL_IMAGE_BASE 미설정 → protocol-relative(//) 만 https 로 보정 + 이미지 호스트를 CDN(cdnpro.kr)으로.
  */
 export function imgUrl(u?: string | null): string | undefined {
   if (!u) return undefined;
   const base = env().PROSELL_IMAGE_BASE;
-  if (!base) return u.startsWith("//") ? "https:" + u : u;
+  if (!base) return toCdnHost(u.startsWith("//") ? "https:" + u : u);
   const path = u.replace(/^(https?:)?\/\/[^/]+/, ""); // 스킴+호스트 제거 → 경로만
   return base.replace(/\/$/, "") + (path.startsWith("/") ? path : "/" + path);
 }
 
-/** 상세 본문 HTML 안의 이미지 호스트(cdnpro.kr / nginx)도 이미지 베이스로 치환 */
+/** 상세 본문 HTML 안의 이미지 호스트 치환.
+ *  - 로컬 도커: cdnpro.kr / nginx 호스트를 PROSELL_IMAGE_BASE 로.
+ *  - 운영: prosell.kr/upload 이미지 호스트를 CDN(cdnpro.kr)으로. */
 export function rewriteContent(html?: string | null): string {
   if (!html) return "";
   const base = env().PROSELL_IMAGE_BASE;
-  if (!base) return html;
+  if (!base) return toCdnHost(html);
   const b = base.replace(/\/$/, "");
   return html
     .replace(/(https?:)?\/\/[a-z0-9.-]*cdnpro\.kr/gi, b)
@@ -3239,6 +3256,17 @@ export type ProductReviewList = { total_count: number; summary: ProductReviewSum
 
 const EMPTY_REVIEW_SUMMARY: ProductReviewSummary = { count: 0, average: 0, photo_count: 0, score_counts: { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0 } };
 
+/** 리뷰 항목의 이미지(files) 호스트를 CDN(cdnpro.kr)으로 정규화. video_src(iframe)는 그대로. */
+function normReviewItems(items: unknown): ProductReview[] {
+  if (!Array.isArray(items)) return [];
+  return (items as ProductReview[]).map((r) => ({
+    ...r,
+    files: Array.isArray(r.files)
+      ? r.files.map((f) => ({ ...f, src: imgUrl(f.src) ?? f.src, thumb: imgUrl(f.thumb) ?? f.thumb }))
+      : [],
+  }));
+}
+
 /** 전체 상품 베스트 리뷰(홈용). products_id=0 전역 조회 — best DESC 순, 기본 포토리뷰. */
 export async function fetchBestReviews(opts: { limit?: number; photo?: 0 | 1 } = {}): Promise<ProductReviewList> {
   const e = env();
@@ -3259,7 +3287,7 @@ export async function fetchBestReviews(opts: { limit?: number; photo?: 0 | 1 } =
     return {
       total_count: Number(j.total_count ?? 0),
       summary: (j.summary as ProductReviewSummary) ?? EMPTY_REVIEW_SUMMARY,
-      items: Array.isArray(j.items) ? (j.items as ProductReview[]) : [],
+      items: normReviewItems(j.items),
     };
   } catch { return empty; }
 }
@@ -3290,7 +3318,7 @@ export async function fetchProductReviews(
     return {
       total_count: Number(j.total_count ?? 0),
       summary: (j.summary as ProductReviewSummary) ?? EMPTY_REVIEW_SUMMARY,
-      items: Array.isArray(j.items) ? (j.items as ProductReview[]) : [],
+      items: normReviewItems(j.items),
     };
   } catch { return empty; }
 }

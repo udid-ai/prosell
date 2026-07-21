@@ -34,20 +34,33 @@ export function getPublicKeyB64(): string {
   return loadOrGenerate().publicKeyDerB64;
 }
 
-/** RSA-OAEP(sha256) base64 암호문을 평문으로 복호화. 실패 시 예외. */
-export function decryptPassword(cipherB64: string): string {
+/** RSA-OAEP(sha256) base64 암호문을 평문으로 복호화. 실패 시 예외.
+ *  Web Crypto(globalThis.crypto.subtle) 사용 — Cloudflare workerd 는 node:crypto 의
+ *  privateDecrypt 를 지원하지 않으므로 subtle 로 복호화한다(Node 20+/workerd 양쪽 호환).
+ *  키 로딩·export(createPrivateKey/export)는 workerd 에서도 동작하므로 그대로 둔다.
+ *  (PW_RSA_PRIVATE_KEY 미설정 시 generateKeyPairSync 임시생성 경로는 Node/dev 전용.) */
+export async function decryptPassword(cipherB64: string): Promise<string> {
   const { privateKey } = loadOrGenerate();
-  const buf = crypto.privateDecrypt(
-    { key: privateKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+  const pkcs8 = privateKey.export({ type: "pkcs8", format: "der" });
+  const key = await globalThis.crypto.subtle.importKey(
+    "pkcs8",
+    pkcs8,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["decrypt"]
+  );
+  const plain = await globalThis.crypto.subtle.decrypt(
+    { name: "RSA-OAEP" },
+    key,
     Buffer.from(cipherB64, "base64")
   );
-  return buf.toString("utf8");
+  return new TextDecoder().decode(plain);
 }
 
 /** 암호문이면 복호화, 아니면(구버전/평문 폴백) 그대로 반환. enc 우선. */
-export function resolvePassword(body: { enc_upw?: unknown; current_upw?: unknown; upw?: unknown }): string {
+export async function resolvePassword(body: { enc_upw?: unknown; current_upw?: unknown; upw?: unknown }): Promise<string> {
   if (typeof body.enc_upw === "string" && body.enc_upw) {
-    try { return decryptPassword(body.enc_upw); } catch { return ""; }
+    try { return await decryptPassword(body.enc_upw); } catch { return ""; }
   }
   if (typeof body.current_upw === "string") return body.current_upw;
   if (typeof body.upw === "string") return body.upw;

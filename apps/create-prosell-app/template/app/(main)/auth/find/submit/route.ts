@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
       const uid = String(b.uid || "").trim();
       const sendId = Number(b.send_id || 0);
       const code = String(b.code || "").trim();
-      const upw = resolvePassword(b as { enc_upw?: unknown; upw?: unknown });
+      const upw = await resolvePassword(b as { enc_upw?: unknown; upw?: unknown });
       if (b.enc_upw && !upw) return NextResponse.json({ ok: false, error: "보안 처리 중 오류가 발생했습니다. 다시 시도해 주세요." }, { status: 400 });
       if (!uid || !contact || !sendId || !code || !upw) return NextResponse.json({ ok: false, error: "필수 정보를 확인해 주세요." }, { status: 400 });
       const r = await pwFindReset({ uid, channel, contact, sendId, code, upw, clientIp });

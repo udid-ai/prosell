@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "만 14세 이상 가입에 동의해 주세요." }, { status: 400 });
   }
   const ip = clientIpFromHeaders(req.headers);
-  const upw = resolvePassword(b); // enc_upw 복호화(없으면 upw 평문 폴백)
+  const upw = await resolvePassword(b); // enc_upw 복호화(없으면 upw 평문 폴백)
   const str = (v: unknown) => (v ? String(v).trim() : undefined);
   const r = await signup({
     uid: String(b.uid || "").trim(),

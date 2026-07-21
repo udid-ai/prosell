@@ -11,7 +11,7 @@ const CART_COOKIE = "cart_id";
 export async function POST(req: NextRequest) {
   const b = (await req.json().catch(() => ({}))) as { uid?: string; upw?: string; enc_upw?: string };
   const uid = String(b.uid || "").trim();
-  const upw = resolvePassword(b);
+  const upw = await resolvePassword(b);
   // enc_upw 가 왔는데 복호화 실패로 빈 값이면(키 불일치 등) 입력 누락이 아니라 보안처리 오류로 안내.
   if (b.enc_upw && !upw) {
     return NextResponse.json({ ok: false, error: "보안 처리 중 오류가 발생했습니다. 다시 시도해 주세요." }, { status: 400 });

@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
   const b = (await req.json().catch(() => ({}))) as AccountUpdate & Record<string, unknown> & { enc_upw?: string; enc_new_upw?: string };
 
   // 암호화된 비밀번호 복호화 → current_upw/new_upw 로 정규화. 암호문 제거(백엔드로 넘기지 않음).
-  if (typeof b.enc_upw === "string" && b.enc_upw) { try { b.current_upw = decryptPassword(b.enc_upw); } catch { /* 폴백: current_upw 그대로 */ } }
-  if (typeof b.enc_new_upw === "string" && b.enc_new_upw) { try { b.new_upw = decryptPassword(b.enc_new_upw); } catch { /* 폴백 */ } }
+  if (typeof b.enc_upw === "string" && b.enc_upw) { try { b.current_upw = await decryptPassword(b.enc_upw); } catch { /* 폴백: current_upw 그대로 */ } }
+  if (typeof b.enc_new_upw === "string" && b.enc_new_upw) { try { b.new_upw = await decryptPassword(b.enc_new_upw); } catch { /* 폴백 */ } }
   delete b.enc_upw; delete b.enc_new_upw;
 
   // 비밀번호 변경 시 최소 검증(서버에서도 백엔드가 재검증)

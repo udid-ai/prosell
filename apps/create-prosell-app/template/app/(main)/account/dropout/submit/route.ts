@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   if (!token) return NextResponse.json({ ok: false, error: "로그인이 필요합니다." }, { status: 401 });
 
   const b = (await req.json().catch(() => ({}))) as { dropout_ct?: string; assent?: boolean; enc_upw?: string; current_upw?: string };
-  const upw = resolvePassword(b);
+  const upw = await resolvePassword(b);
   const r = await dropoutAccount(token, {
     dropout_ct: String(b.dropout_ct || ""),
     assent: !!b.assent,

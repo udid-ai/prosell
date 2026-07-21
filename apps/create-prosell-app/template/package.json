@@ -1,6 +1,6 @@
 {
   "name": "prosell-storefront",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "scripts": {
     "setup": "node scripts/create.mjs",

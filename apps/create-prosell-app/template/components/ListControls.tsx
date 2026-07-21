@@ -30,14 +30,17 @@ export default function ListControls({
   limit,
   basePath,
   query = {},
+  hideSorts = [],
 }: {
   total: number;
   order: string;
   limit: string;
   basePath: string;
   query?: Record<string, string>;
+  hideSorts?: string[]; // 숨길 정렬값(예: 카테고리에서 "0" 등록순 제외)
 }) {
   const router = useRouter();
+  const sorts = SORTS.filter((s) => !hideSorts.includes(s.v));
 
   const go = (next: Record<string, string>) => {
     const p = new URLSearchParams({ ...query, order, limit, ...next });
@@ -52,7 +55,7 @@ export default function ListControls({
       </p>
       <div className="flex items-center gap-2">
         <select aria-label="정렬" value={order} onChange={(e) => go({ order: e.target.value })} className={selectCls}>
-          {SORTS.map((s) => (
+          {sorts.map((s) => (
             <option key={s.v} value={s.v}>{s.label}</option>
           ))}
         </select>

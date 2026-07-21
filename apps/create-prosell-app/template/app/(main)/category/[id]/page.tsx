@@ -73,7 +73,7 @@ export default async function CategoryView({
   const allHref = parent ? `/category/${parent.id}` : "/category";
 
   return (
-    <div className="mx-auto max-w-content p-6">
+    <div className="mx-auto max-w-content px-4 py-6">
       {/* 브레드크럼 (id 링크) */}
       <nav className="flex flex-wrap items-center gap-1 text-[13px] text-sub">
         <Link href="/category" className="hover:text-accent">전체</Link>
@@ -122,6 +122,7 @@ export default async function CategoryView({
         query={filterQuery}
         demoFallback={false}
         adultAllowed={viewer?.adult === 1}
+        hideSorts={["0"]}
       />
     </div>
   );

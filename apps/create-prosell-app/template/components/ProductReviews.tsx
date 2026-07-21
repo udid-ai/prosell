@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import type { ProductReview, ProductReviewSummary } from "@/lib/prosell";
 import { formatDateTime } from "@/lib/format";
 import ReviewPhotoGallery from "./ReviewPhotoGallery";
+import LazyImg from "./LazyImg";
 
 // 상품 상세 «상품평» 읽기 전용 뷰.
 //  · 작성/수정/삭제/베스트/답변 등 관리 기능 없음(작성은 마이페이지 회원 스코프에서).
@@ -33,7 +34,7 @@ function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
   return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt="" className="max-h-[90vh] max-w-full rounded-lg object-contain" onClick={(e) => e.stopPropagation()} />
+      <img src={src} alt="" loading="lazy" className="max-h-[90vh] max-w-full rounded-lg object-contain" onClick={(e) => e.stopPropagation()} />
       <button type="button" onClick={onClose} aria-label="닫기"
         className="absolute right-4 top-4 grid h-9 w-9 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25">✕</button>
     </div>,
@@ -64,8 +65,7 @@ function ReviewCard({ r, onPhoto }: { r: ProductReview; onPhoto: (src: string) =
           {photos.map((f) => (
             <button key={f.id} type="button" onClick={() => onPhoto(f.src!)}
               className="h-20 w-20 overflow-hidden rounded-lg border border-line bg-surface">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={f.thumb || f.src!} alt="" className="h-full w-full object-cover" loading="lazy" />
+              <LazyImg src={f.thumb || f.src!} alt="" className="h-full w-full object-cover" />
             </button>
           ))}
         </div>

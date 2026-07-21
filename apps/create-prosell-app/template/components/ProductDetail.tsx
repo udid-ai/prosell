@@ -9,6 +9,7 @@ import { addToCart, type AddItem } from "@/lib/cart";
 import { toast } from "@/lib/toast";
 import CartAddedModal from "./CartAddedModal";
 import RestockModal from "./RestockModal";
+import LazyImg from "./LazyImg";
 
 // 선택 라인 — 상품옵션(opt)과 추가옵션(addo)을 통일된 형태로 누적(둘 다 "추가"된다).
 // opt 라인은 레거시 leaf row 의 수량 제한/재고/묶음을 함께 실어 수량 가드에 사용한다.
@@ -330,8 +331,7 @@ export default function ProductDetail({ pv, addoptions = [], coupons = [], wishe
               className={`flex min-w-0 flex-1 items-center gap-3 text-left ${soldout ? "cursor-default" : "cursor-pointer"}`}>
               <span className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-line bg-surface">
                 {thumb ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={thumb} alt="" className={`h-full w-full object-cover ${soldout ? "opacity-40" : ""}`} />
+                  <LazyImg src={thumb} alt="" className={`h-full w-full object-cover ${soldout ? "opacity-40" : ""}`} />
                 ) : null}
               </span>
               <span className="min-w-0 flex-1">
@@ -665,8 +665,7 @@ export default function ProductDetail({ pv, addoptions = [], coupons = [], wishe
       <div>
         <div className="overflow-hidden rounded-xl border border-line bg-card">
           {gallery[img]?.src ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={gallery[img].src} alt="" className="aspect-square w-full object-cover" />
+            <LazyImg src={gallery[img].src} alt="" className="aspect-square w-full object-cover" />
           ) : (
             <div className="grid aspect-square w-full place-items-center text-sub">이미지 없음</div>
           )}
@@ -675,8 +674,7 @@ export default function ProductDetail({ pv, addoptions = [], coupons = [], wishe
           <div className="mt-3 flex flex-wrap gap-2">
             {gallery.map((gimg, i) => (
               <button key={i} type="button" onClick={() => setImg(i)} className={`h-16 w-16 overflow-hidden rounded-md border ${i === img ? "border-accent" : "border-line"}`}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={gimg.thumb || gimg.src} alt="" className="h-full w-full object-cover" />
+                <LazyImg src={gimg.thumb || gimg.src} alt="" className="h-full w-full object-cover" />
               </button>
             ))}
           </div>

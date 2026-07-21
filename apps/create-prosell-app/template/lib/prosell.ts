@@ -1969,6 +1969,46 @@ export async function fetchMemberOrders(token: string, opts: { page?: number; mo
   } catch { return empty; }
 }
 
+// 마이페이지 대시보드 주문 요약 — 상태 버킷별 주문 건수(기간 내, DISTINCT 주문 기준).
+//  · orders: 배송 단계 파이프라인(입금대기→준비중→배송중→배송완료) + 구매확정 + total
+//  · claims: 진행중 클레임(취소접수/반품접수/교환접수)
+// 상태별 집계는 order/search 에 없어 전용 엔드포인트(GET /api/v2/order/summary)를 사용한다.
+export type OrderSummary = {
+  period: { start: string; end: string };
+  orders: { paywait: number; preparing: number; shipping: number; delivered: number; confirmed: number; total: number };
+  claims: { cancel: number; refund: number; exchange: number };
+};
+
+const EMPTY_ORDER_SUMMARY: OrderSummary = {
+  period: { start: "", end: "" },
+  orders: { paywait: 0, preparing: 0, shipping: 0, delivered: 0, confirmed: 0, total: 0 },
+  claims: { cancel: 0, refund: 0, exchange: 0 },
+};
+
+/** 대시보드 주문 요약. (GET /api/v2/order/summary) 회원/게스트 스코프. 서버사이드 전용. */
+export async function fetchOrderSummary(token: string, months = 3): Promise<OrderSummary> {
+  const e = env();
+  if (!e.PROSELL_API_BASE || !token) return EMPTY_ORDER_SUMMARY;
+  try {
+    const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/order/summary?months=${months}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store",
+    });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || !j || j.error) return EMPTY_ORDER_SUMMARY;
+    const o = j.orders ?? {};
+    const c = j.claims ?? {};
+    const n = (x: unknown) => Number(x ?? 0) || 0;
+    return {
+      period: { start: String(j.period?.start ?? ""), end: String(j.period?.end ?? "") },
+      orders: {
+        paywait: n(o.paywait), preparing: n(o.preparing), shipping: n(o.shipping),
+        delivered: n(o.delivered), confirmed: n(o.confirmed), total: n(o.total),
+      },
+      claims: { cancel: n(c.cancel), refund: n(c.refund), exchange: n(c.exchange) },
+    };
+  } catch { return EMPTY_ORDER_SUMMARY; }
+}
+
 // 취소 내역(회원) — GET /api/v2/order/cancel. cancel(취소정보) + items(취소 상품).
 export type MemberCancel = {
   cancel: {
@@ -3172,6 +3212,7 @@ export type ProductReview = {
   url: string | null; video_src: string | null; name: string | null; score: number; best: number;
   content: string | null; dt: string | null; files: ProductReviewFile[];
   reply_name: string | null; reply_content: string | null; reply_dt: string | null;
+  products_id?: number; product_title?: string | null;   // 전체(홈) 리뷰 — 상품 링크/이름
 };
 export type ProductReviewSummary = {
   count: number; average: number; photo_count: number;
@@ -3180,6 +3221,31 @@ export type ProductReviewSummary = {
 export type ProductReviewList = { total_count: number; summary: ProductReviewSummary; items: ProductReview[] };
 
 const EMPTY_REVIEW_SUMMARY: ProductReviewSummary = { count: 0, average: 0, photo_count: 0, score_counts: { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0 } };
+
+/** 전체 상품 베스트 리뷰(홈용). products_id=0 전역 조회 — best DESC 순, 기본 포토리뷰. */
+export async function fetchBestReviews(opts: { limit?: number; photo?: 0 | 1 } = {}): Promise<ProductReviewList> {
+  const e = env();
+  const empty: ProductReviewList = { total_count: 0, summary: EMPTY_REVIEW_SUMMARY, items: [] };
+  if (!e.PROSELL_API_BASE || !e.PROSELL_CLIENT_ID) return empty;
+  try {
+    const u = new URL(`${e.PROSELL_API_BASE}/api/v2/products/review`);
+    u.searchParams.set("products_id", "0");   // 전체
+    u.searchParams.set("limit", String(opts.limit ?? 15));
+    if (opts.photo !== undefined) u.searchParams.set("photo", String(opts.photo));
+    const res = await fetch(u.toString(), {
+      headers: { Accept: "application/json", "X-App-Client-Id": e.PROSELL_CLIENT_ID },
+      ...isrOpt(["best-reviews"]),
+    });
+    if (!res.ok) return empty;
+    const j = await res.json().catch(() => null);
+    if (!j || j.error) return empty;
+    return {
+      total_count: Number(j.total_count ?? 0),
+      summary: (j.summary as ProductReviewSummary) ?? EMPTY_REVIEW_SUMMARY,
+      items: Array.isArray(j.items) ? (j.items as ProductReview[]) : [],
+    };
+  } catch { return empty; }
+}
 
 export async function fetchProductReviews(
   productsId: number | string,
@@ -3930,4 +3996,213 @@ export async function getServerCartGrouped(owner: string, admcode = "", lineKeys
   } catch {
     return null;
   }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  자유게시판(bbs) — 레거시 커뮤니티 게시판(bbs_article_{id}/bbs_reply_{id}).
+//  통합 cs 게시판(/api/v2/board)과 별개 시스템. 신규 API2 /api/v2/bbs 를 래핑.
+//  회원/비회원(name+upw) 모두 지원. 비밀글은 본인/관리자 자동, 비회원은 upw 검증.
+// ══════════════════════════════════════════════════════════════
+export type BbsBoard = {
+  bbs_id: string; title: string; slogan: string;
+  use_category: boolean; categories: string[];
+  rows: number;
+  secret: number; adult: number; file: number; file_size_mb: number;
+  video: number; url: number; hashtag: number; reply: number; good: number; reply_good: number;
+  police: number; report_reasons: string[];   // 신고 사용 + 사유 목록
+  view_list: number;   // 1이면 상세 하단에 게시물 리스트 노출
+  list_level: number; view_level: number;   // 목록/내용 열람 필요 등급
+  write_level: number; can_write: number; is_admin: number; adult_ok: number;
+  recaptcha: string;   // 비회원 글쓰기용 reCAPTCHA 사이트키(빈값=불필요)
+  fields_list: { num: boolean; ct: boolean; name: boolean; dt: boolean; view: boolean; good: boolean; nogood: boolean };
+};
+export type BbsArticleSummary = {
+  id: number; number: number | string | null; category: string | null; title: string;
+  name: string; is_guest: boolean; dt: string; dt_full: string;
+  view: number; good: number; nogood: number; reply_count: number;
+  secret: number; adult: number; locked: number; is_mine: number;
+  has_url: number; has_photo: number; has_file: number; is_new: number;
+};
+export type BbsList = {
+  board: BbsBoard | null; notices: BbsArticleSummary[]; articles: BbsArticleSummary[];
+  total_count: number; total_page: number; page: number; list_msg: number; blocked: number;
+};
+export type BbsFile = { id: number; name: string; size: number; href: string };
+export type BbsImage = { url: string; width: number; height: number };
+export type BbsAttachmentRef = { id: number; mode: string; name: string; is_image: number };
+export type BbsArticleDetail = {
+  id: number; category: string | null; title: string; name: string; is_guest: boolean;
+  dt: string; view: number; secret: number; adult: number; notice: number;
+  url: string | null; good: number; nogood: number; hashtags: string[]; videos: string[];
+  read: number; locked: number; adult_blocked: number; view_blocked: number; is_mine: number; can_edit: number; can_delete: number;
+  content: string | null; images: BbsImage[]; files: BbsFile[]; attachments: BbsAttachmentRef[];
+};
+export type BbsArticleLink = { id: number; title: string; secret: number } | null;
+export type BbsReply = {
+  id: number; reply_id: number; is_reply: number; name: string; is_guest: boolean; is_mine: number;
+  good: number; nogood: number;
+  content: string; blind: number; dt: string; can_edit: number; can_delete: number; can_reply: number;
+};
+export type BbsArticleView = {
+  board: BbsBoard | null; article: BbsArticleDetail | null;
+  prev: BbsArticleLink; next: BbsArticleLink; replies: BbsReply[];
+};
+export type BbsUploadItem = { id: number; mode: string; name: string; size: number; is_image: number; width: number; height: number; src: string };
+
+// 읽기 헤더: 토큰(회원) 우선, 없으면 client-id(비회원).
+function bbsReadHeaders(token?: string): Record<string, string> {
+  const e = env();
+  const h: Record<string, string> = { Accept: "application/json" };
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  else h["X-App-Client-Id"] = e.PROSELL_CLIENT_ID;
+  return h;
+}
+
+export type BbsListInput = { page?: number; ct?: string; c?: number; q?: string };
+
+/** 게시판 목록 + 메타. (GET /api/v2/bbs) 서버사이드 전용. */
+export async function fetchBbsList(bbsId: string, opts: BbsListInput = {}, token?: string): Promise<BbsList> {
+  const e = env();
+  const page = Math.max(1, opts.page ?? 1);
+  const empty: BbsList = { board: null, notices: [], articles: [], total_count: 0, total_page: 0, page, list_msg: 0, blocked: 0 };
+  if (!e.PROSELL_API_BASE || !/^[a-zA-Z0-9_-]+$/.test(bbsId)) return empty;
+  try {
+    const u = new URL(`${e.PROSELL_API_BASE}/api/v2/bbs`);
+    u.searchParams.set("bbs_id", bbsId);
+    u.searchParams.set("page", String(page));
+    if (opts.ct) u.searchParams.set("ct", opts.ct);
+    if (opts.c && opts.q) { u.searchParams.set("c", String(opts.c)); u.searchParams.set("q", opts.q); }
+    const res = await fetch(u.toString(), { headers: bbsReadHeaders(token), cache: "no-store" });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || !j || j.error) return empty;
+    return {
+      board: (j.board as BbsBoard) ?? null,
+      notices: Array.isArray(j.notices) ? (j.notices as BbsArticleSummary[]) : [],
+      articles: Array.isArray(j.articles) ? (j.articles as BbsArticleSummary[]) : [],
+      total_count: Number(j.total_count ?? 0),
+      total_page: Number(j.total_page ?? 0),
+      page: Number(j.page ?? page),
+      list_msg: Number(j.list_msg ?? 0),
+      blocked: Number(j.blocked ?? 0),
+    };
+  } catch { return empty; }
+}
+
+/** 게시물 상세(+이전/다음/댓글). (GET /api/v2/bbs/article) 비밀글은 upw 로 열람. 서버사이드 전용. */
+export async function fetchBbsArticle(bbsId: string, id: number | string, opts: { upw?: string } = {}, token?: string): Promise<BbsArticleView | null> {
+  const e = env();
+  const aid = Number(id);
+  if (!e.PROSELL_API_BASE || !/^[a-zA-Z0-9_-]+$/.test(bbsId) || !Number.isInteger(aid) || aid <= 0) return null;
+  try {
+    const u = new URL(`${e.PROSELL_API_BASE}/api/v2/bbs/article`);
+    u.searchParams.set("bbs_id", bbsId);
+    u.searchParams.set("id", String(aid));
+    if (opts.upw) u.searchParams.set("upw", opts.upw);
+    const res = await fetch(u.toString(), { headers: bbsReadHeaders(token), cache: "no-store" });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || !j || j.error) return null;
+    return {
+      board: (j.board as BbsBoard) ?? null,
+      article: (j.article as BbsArticleDetail) ?? null,
+      prev: (j.prev as BbsArticleLink) ?? null,
+      next: (j.next as BbsArticleLink) ?? null,
+      replies: Array.isArray(j.replies) ? (j.replies as BbsReply[]) : [],
+    };
+  } catch { return null; }
+}
+
+/** 댓글 목록만 조회(작성 후 갱신용). (GET /api/v2/bbs/reply) */
+export async function fetchBbsReplies(bbsId: string, articleId: number | string, token?: string): Promise<BbsReply[]> {
+  const e = env();
+  if (!e.PROSELL_API_BASE) return [];
+  try {
+    const u = new URL(`${e.PROSELL_API_BASE}/api/v2/bbs/reply`);
+    u.searchParams.set("bbs_id", bbsId);
+    u.searchParams.set("article_id", String(articleId));
+    const res = await fetch(u.toString(), { headers: bbsReadHeaders(token), cache: "no-store" });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || !j || j.error) return [];
+    return Array.isArray(j.replies) ? (j.replies as BbsReply[]) : [];
+  } catch { return []; }
+}
+
+export type BbsArticleInput = {
+  bbs_id: string; article_id?: number;
+  ar_ct?: string; ar_title: string; ar_content: string;
+  ar_secret?: number; ar_adult?: number; ar_notice?: number; ar_thumb?: number;
+  ar_url?: string; ar_hashtag?: string; ar_video1?: string; ar_video2?: string; ar_video3?: string;
+  upload_file1?: number; upload_file2?: number; upload_file3?: number;
+  name?: string; upw?: string; recaptcha?: string;    // 비회원
+};
+
+// bbs 쓰기 공통 호출. token 있으면 회원, 없으면 비회원(client-id) 으로 요청.
+async function bbsMutate(method: "POST" | "PUT" | "DELETE", path: string, token: string | undefined, body: Record<string, unknown>): Promise<{ ok: boolean; data?: any; error?: string }> {
+  const e = env();
+  if (!e.PROSELL_API_BASE) return { ok: false, error: "요청을 처리할 수 없습니다." };
+  const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  else headers["X-App-Client-Id"] = e.PROSELL_CLIENT_ID;   // 비회원
+  try {
+    const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/bbs${path}`, {
+      method, headers, body: JSON.stringify(body), cache: "no-store",
+    });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || j?.error) return { ok: false, error: j?.error?.message || "요청을 처리할 수 없습니다." };
+    return { ok: true, data: j };
+  } catch { return { ok: false, error: "통신 오류가 발생했습니다." }; }
+}
+
+/** 게시물 등록. token 없으면 비회원(name+upw 필요). */
+export function createBbsArticle(token: string | undefined, input: BbsArticleInput) {
+  return bbsMutate("POST", "/article", token, input as Record<string, unknown>);
+}
+/** 게시물 수정(article_id 필수). */
+export function updateBbsArticle(token: string | undefined, input: BbsArticleInput) {
+  return bbsMutate("PUT", "/article", token, input as Record<string, unknown>);
+}
+/** 게시물 삭제(비회원은 upw). */
+export function deleteBbsArticle(token: string | undefined, bbs_id: string, article_id: number, upw?: string) {
+  return bbsMutate("DELETE", "/article", token, { bbs_id, article_id, upw });
+}
+/** 댓글/대댓글 작성(reply_id 있으면 대댓글). */
+export function createBbsReply(token: string | undefined, bbs_id: string, article_id: number, content: string, reply_id?: number) {
+  return bbsMutate("POST", "/reply", token, { bbs_id, article_id, content, reply_id: reply_id ?? 0 });
+}
+/** 댓글 수정. */
+export function updateBbsReply(token: string | undefined, bbs_id: string, article_id: number, reply_id: number, content: string) {
+  return bbsMutate("PUT", "/reply", token, { bbs_id, article_id, reply_id, content });
+}
+/** 댓글 삭제. */
+export function deleteBbsReply(token: string | undefined, bbs_id: string, article_id: number, reply_id: number) {
+  return bbsMutate("DELETE", "/reply", token, { bbs_id, article_id, reply_id });
+}
+/** 게시물/댓글 추천(mode=1)·반대(mode=2). reply_id 있으면 댓글. 반환 data.good/nogood. */
+export function voteBbs(token: string | undefined, bbs_id: string, article_id: number, mode: 1 | 2, reply_id?: number) {
+  return bbsMutate("POST", "/good", token, reply_id ? { bbs_id, article_id, reply_id, mode } : { bbs_id, article_id, mode });
+}
+/** 게시물/댓글 신고. reply_id 있으면 댓글. ct=신고 사유. 로그인 필요. */
+export function reportBbs(token: string | undefined, bbs_id: string, article_id: number, ct: string, reply_id?: number) {
+  return bbsMutate("POST", "/police", token, reply_id ? { bbs_id, article_id, reply_id, ct } : { bbs_id, article_id, ct });
+}
+
+/** 첨부 업로드(multipart). (POST /api/v2/bbs/upload) token 없으면 비회원(client-id). */
+export async function uploadBbsFiles(token: string | undefined, bbsId: string, files: File[], mode = "file1"): Promise<{ ok: boolean; items?: BbsUploadItem[]; error?: string }> {
+  const e = env();
+  if (!e.PROSELL_API_BASE) return { ok: false, error: "요청을 처리할 수 없습니다." };
+  if (!files.length) return { ok: false, error: "파일이 없습니다." };
+  const fd = new FormData();
+  fd.append("bbs_id", bbsId);
+  fd.append("mode", mode);
+  files.forEach((f, i) => fd.append(`file${i}`, f, f.name));
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  else headers["X-App-Client-Id"] = e.PROSELL_CLIENT_ID;
+  try {
+    const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/bbs/upload`, {
+      method: "POST", headers, body: fd, cache: "no-store",
+    });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || j?.error) return { ok: false, error: j?.error?.message || "업로드에 실패했습니다." };
+    return { ok: true, items: Array.isArray(j?.items) ? (j.items as BbsUploadItem[]) : [] };
+  } catch { return { ok: false, error: "업로드 중 오류가 발생했습니다." }; }
 }

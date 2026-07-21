@@ -11,7 +11,9 @@ export async function GET(req: NextRequest) {
   const scoreRaw = Number(sp.get("score") || 0);
   const score = scoreRaw >= 1 && scoreRaw <= 5 ? scoreRaw : undefined;
   const photo = sp.get("photo") === "1" ? 1 : undefined;
+  const limitRaw = Number(sp.get("limit") || 10);
+  const limit = Math.min(50, Math.max(1, Number.isFinite(limitRaw) ? limitRaw : 10));
 
-  const list = await fetchProductReviews(productsId, { page, score, photo, limit: 10 });
+  const list = await fetchProductReviews(productsId, { page, score, photo, limit });
   return NextResponse.json(list);
 }

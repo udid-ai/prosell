@@ -25,7 +25,7 @@ export default async function CategoryAll({ searchParams }: { searchParams: Prom
   ]);
 
   return (
-    <div className="mx-auto max-w-content p-6">
+    <div className="mx-auto max-w-content px-4 py-6">
       <CategoryFilters
         facets={facets}
         basePath="/category"
@@ -42,7 +42,7 @@ export default async function CategoryAll({ searchParams }: { searchParams: Prom
         ) : undefined}
       />
 
-      <ProductListing items={items} total={total_count} page={page} order={order} limit={limit} basePath="/category" query={filterQuery} demoFallback={false} adultAllowed={viewer?.adult === 1} />
+      <ProductListing items={items} total={total_count} page={page} order={order} limit={limit} basePath="/category" query={filterQuery} demoFallback={false} adultAllowed={viewer?.adult === 1} hideSorts={["0"]} />
     </div>
   );
 }

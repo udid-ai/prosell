@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { formatDateTime } from "@/lib/format";
 import type { ProductReview } from "@/lib/prosell";
+import LazyImg from "./LazyImg";
 
 // 상품페이지 «포토리뷰» 갤러리 — 리뷰 목록 위 1열 사진 스트립 + 더보기.
 //  · 더보기 → 그리드 모달, 사진 클릭 → 리뷰 상세(모달 내), 상세에서 좌우 큰 버튼으로 포토 이동.
@@ -122,8 +123,7 @@ export default function ReviewPhotoGallery({
         {visible.map((p, i) => (
           <div key={p.key} className={`relative aspect-square min-w-0 flex-1 overflow-hidden rounded-lg border border-line bg-surface ${hideAt(i)}`}>
             <button type="button" onClick={() => openDetail(i)} className="block h-full w-full">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={p.thumb || p.src} alt="" className="h-full w-full object-cover" loading="lazy" />
+              <LazyImg src={p.thumb || p.src} alt="" className="h-full w-full object-cover" />
             </button>
             {/* 더보기 오버레이 — 해당 브레이크포인트에서 이 타일이 마지막이고 더 볼 사진이 있을 때만 */}
             {i >= 2 && overlayMore(i) && (
@@ -154,8 +154,7 @@ export default function ReviewPhotoGallery({
                   {photos.map((p, i) => (
                     <button key={p.key} type="button" onClick={() => setDetail(i)}
                       className="aspect-square overflow-hidden rounded-lg border border-line bg-surface">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={p.thumb || p.src} alt="" className="h-full w-full object-cover" loading="lazy" />
+                      <LazyImg src={p.thumb || p.src} alt="" className="h-full w-full object-cover" />
                     </button>
                   ))}
                 </div>
@@ -193,7 +192,7 @@ export default function ReviewPhotoGallery({
                     {/* 사진 */}
                     <div className="flex items-center justify-center bg-black sm:w-1/2">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={p.src} alt="" className="max-h-[45vh] w-full object-contain sm:max-h-[90vh]" />
+                      <img src={p.src} alt="" loading="lazy" className="max-h-[45vh] w-full object-contain sm:max-h-[90vh]" />
                     </div>
                     {/* 리뷰 내용 */}
                     <div className="flex min-h-0 flex-1 flex-col sm:w-1/2">

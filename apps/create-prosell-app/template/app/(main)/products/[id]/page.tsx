@@ -37,7 +37,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
   if (pv.state?.block === "adult") {
     const loggedIn = !!token;
     return (
-      <div className="mx-auto grid min-h-[60vh] max-w-content place-items-center p-6">
+      <div className="mx-auto grid min-h-[60vh] max-w-content place-items-center px-4 py-6">
         <div className="w-full max-w-md rounded-2xl border border-line bg-card p-8 text-center shadow-card">
           <span className="mx-auto grid h-16 w-16 place-items-center rounded-full border-2 border-sale text-xl font-extrabold text-sale">19</span>
           <h1 className="mt-5 text-lg font-bold text-text">성인인증이 필요한 상품입니다</h1>
@@ -67,7 +67,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
     const loggedIn = !!token;
     const levelName = pv.state.level_view_name || "";
     return (
-      <div className="mx-auto grid min-h-[60vh] max-w-content place-items-center p-6">
+      <div className="mx-auto grid min-h-[60vh] max-w-content place-items-center px-4 py-6">
         <div className="w-full max-w-md rounded-2xl border border-line bg-card p-8 text-center shadow-card">
           <span className="mx-auto grid h-16 w-16 place-items-center rounded-full border-2 border-accent text-accent">
             <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
@@ -115,7 +115,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
   const catPath = pv.category ? categoryPath(categories, pv.category) : [];
 
   return (
-    <div className="mx-auto max-w-content p-4 sm:p-6">
+    <div className="mx-auto max-w-content px-4 py-4 sm:py-6">
       {/* 브레드크럼 — 홈 / (카테고리 경로: 실제 분류명, id 링크) */}
       <nav className="mb-4 flex flex-wrap items-center gap-1 text-[13px] text-sub">
         <Link href="/" className="hover:text-accent">홈</Link>

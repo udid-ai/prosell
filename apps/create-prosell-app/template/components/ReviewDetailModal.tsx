@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import { formatDateTime } from "@/lib/format";
 import type { ProductReview } from "@/lib/prosell";
+import LazyImg from "./LazyImg";
 
 // 포토리뷰 상세 모달(재사용) — items[index] 리뷰를 크게 보여주고 좌우로 이동.
 //  · 사진 왼쪽(여러 장이면 썸네일 전환) + 별점/작성자/옵션/제목/내용/동영상/URL/답변.
@@ -20,12 +22,13 @@ function Stars({ score }: { score: number }) {
 }
 
 export default function ReviewDetailModal({
-  items, index, onClose, onNav,
+  items, index, onClose, onNav, showProductLink = false,
 }: {
   items: ProductReview[];
   index: number;
   onClose: () => void;
   onNav: (dir: 1 | -1) => void;
+  showProductLink?: boolean; // 내용 하단에 «상품 상세보기» 버튼 노출(전체 리뷰 목록 등)
 }) {
   const [photoIdx, setPhotoIdx] = useState(0);
   const r = items[index];
@@ -67,14 +70,13 @@ export default function ReviewDetailModal({
         {main && (
           <div className="flex flex-col bg-black sm:w-1/2">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={main.src!} alt="" className="max-h-[45vh] w-full object-contain sm:max-h-[90vh] sm:flex-1" />
+            <img src={main.src!} alt="" loading="lazy" className="max-h-[45vh] w-full object-contain sm:max-h-[90vh] sm:flex-1" />
             {photos.length > 1 && (
               <div className="flex gap-1.5 overflow-x-auto bg-black/60 p-2">
                 {photos.map((f, i) => (
                   <button key={f.id} type="button" onClick={() => setPhotoIdx(i)}
                     className={`h-12 w-12 shrink-0 overflow-hidden rounded border ${i === photoIdx ? "border-white" : "border-transparent opacity-60"}`}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={f.thumb || f.src!} alt="" className="h-full w-full object-cover" />
+                    <LazyImg src={f.thumb || f.src!} alt="" className="h-full w-full object-cover" />
                   </button>
                 ))}
               </div>
@@ -109,6 +111,16 @@ export default function ReviewDetailModal({
             )}
             <p className="mt-4 text-right text-[12px] text-sub">{index + 1} / {items.length}</p>
           </div>
+          {/* 내용 하단 — 상품 상세 이동 버튼(전체 리뷰 목록에서 진입 시) */}
+          {showProductLink && r.products_id ? (
+            <div className="border-t border-line p-4">
+              <Link href={`/products/${r.products_id}`} onClick={onClose}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-accent px-4 py-3 text-sm font-semibold text-accent-foreground transition-opacity hover:opacity-90">
+                상품 상세보기
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+              </Link>
+            </div>
+          ) : null}
         </div>
         </div>
       </div>

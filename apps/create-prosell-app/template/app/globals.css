@@ -161,9 +161,11 @@ body.tabs-stuck .site-header { transform: translateY(-100%); }
 /* 조회 화면 본문 — 긴 URL 등이 레이아웃을 밀지 않게 */
 .board-html { overflow-wrap: anywhere; }
 
-/* 본문 삽입 이미지·동영상 — 편집/조회 모두 컨테이너를 넘지 않게 */
+/* 본문 삽입 이미지·동영상 — 편집/조회 모두 컨테이너를 넘지 않게.
+   width:auto 로 인라인 width 속성(붙여넣기/레거시 HTML)을 무력화 → 원본보다 커지지 않음. */
 .tiptap-content img, .board-html img {
   max-width: 100%;
+  width: auto;
   height: auto;
   border-radius: 8px;
   margin: 0.5em 0;
@@ -179,6 +181,44 @@ body.tabs-stuck .site-header { transform: translateY(-100%); }
   border: 0;
 }
 
+/* 표 — 에디터·조회 공통. Tiptap Table 은 colgroup 로 열 너비를 관리한다. */
+.tiptap-content table, .board-html table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  margin: 0.5em 0;
+  overflow: hidden;
+}
+/* 셀 테두리 — 라이트/다크 모두에서 또렷하게(연한 라인색은 표에선 잘 안 보임). */
+.tiptap-content table, .board-html table { border: 1px solid rgba(120, 124, 135, 0.5); }
+.tiptap-content td, .tiptap-content th, .board-html td, .board-html th {
+  border: 1px solid rgba(120, 124, 135, 0.5);
+  padding: 0.4em 0.6em;
+  vertical-align: top;
+  min-width: 3em;
+}
+.tiptap-content th, .board-html th {
+  background: var(--color-surface, #f5f6f8);
+  font-weight: 700;
+  text-align: left;
+}
+.tiptap-content td, .tiptap-content th { position: relative; }
+/* 드래그로 선택된 셀 범위 하이라이트 — :after 오버레이는 border-collapse 표에서
+   안 그려지는 브라우저가 있어 셀 배경을 직접 지정한다(확실히 보임). */
+.tiptap-content .selectedCell { background: rgba(37, 99, 235, 0.25) !important; }
+/* 열 크기조절 핸들 */
+.tiptap-content .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--color-accent, #2563eb);
+  cursor: col-resize;
+}
+.tiptap-content.resize-cursor { cursor: col-resize; }
+.board-html table { max-width: 100%; }
+
 /* 커스텀 지우기 버튼을 쓰는 검색 입력 — WebKit 기본 ×(search-cancel-button)를 숨겨 «×가 2개» 보이는 것을 막는다.
    기본 ×에 의존하는 검색창(SearchBar 상품검색)도 있으므로 전역이 아니라 클래스로 한정한다. */
 .search-noclear::-webkit-search-cancel-button,
@@ -186,3 +226,31 @@ body.tabs-stuck .site-header { transform: translateY(-100%); }
   -webkit-appearance: none;
   appearance: none;
 }
+
+/* Swiper 첫 페인트 플래시 방지.
+   dev(turbopack)에선 swiper/css 가 JS로 뒤늦게 주입되어, 초기화 전에는 슬라이드가 폭 없이
+   세로로 쌓여 이미지가 원본 크기로 «1개»만 크게 보였다가 개수대로 줄어드는 현상이 있다.
+   swiper 자체 CSS 의 핵심 레이아웃(overflow/flex)을 전역 스타일에 미리 넣어 항상 첫 페인트부터 적용되게 한다.
+   슬라이드 폭은 각 컴포넌트에서 slidesPerView 에 맞춘 w-1/2 등 유틸리티가 담당(초기화 후 swiper 인라인 width 가 덮어씀). */
+.swiper { overflow: hidden; }
+.swiper-wrapper { display: flex; box-sizing: content-box; }
+.swiper-slide { flex-shrink: 0; }
+
+/* 슬라이드 폭/높이를 slidesPerView 와 동일하게 «초기화 전»부터 CSS로 고정 → 이미지가 100% 로 커졌다
+   줄어드는 깜빡임 방지. (Tailwind 의 [&_.swiper-slide] 임의변형이 v4 에서 생성되지 않아 전역 CSS로 처리.)
+   초기화 후엔 swiper 가 슬라이드에 인라인 width 를 넣어 이 값을 덮어쓴다. */
+.hswiper .swiper-wrapper { align-items: stretch; }
+.hswiper .swiper-slide { height: auto; }
+/* 상품(판매량순/신상품순): 2 / sm 3 / lg 4 */
+.pcols .swiper-slide { width: 50%; }
+@media (min-width: 640px) { .pcols .swiper-slide { width: 33.3333%; } }
+@media (min-width: 1024px) { .pcols .swiper-slide { width: 25%; } }
+/* 리뷰 세로: 2 / sm 3 / lg 4 / xl 5 */
+.rcols-v .swiper-slide { width: 50%; }
+@media (min-width: 640px) { .rcols-v .swiper-slide { width: 33.3333%; } }
+@media (min-width: 1024px) { .rcols-v .swiper-slide { width: 25%; } }
+@media (min-width: 1280px) { .rcols-v .swiper-slide { width: 20%; } }
+/* 리뷰 가로(상품상세): 85% / sm 2 / lg 3 */
+.rcols-h .swiper-slide { width: 85%; }
+@media (min-width: 640px) { .rcols-h .swiper-slide { width: 50%; } }
+@media (min-width: 1024px) { .rcols-h .swiper-slide { width: 33.3333%; } }

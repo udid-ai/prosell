@@ -19,7 +19,7 @@ export default async function OrderCompletePage({ params }: { params: Promise<{ 
 
   if (!order) {
     return (
-      <div className="mx-auto max-w-content p-6">
+      <div className="mx-auto max-w-content px-4 py-6">
         <div className="rounded-2xl border border-line bg-card p-12 text-center">
           <p className="text-sub">주문 정보를 찾을 수 없습니다.</p>
           <Link href="/" className="mt-4 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground">홈으로</Link>

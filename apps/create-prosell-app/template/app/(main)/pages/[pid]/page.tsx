@@ -29,26 +29,24 @@ export default async function ContentPage({ params }: { params: Promise<{ pid: s
         {page.slogan ? <p className="mt-1.5 text-sm text-sub">{page.slogan}</p> : null}
       </header>
 
-      {/* 문서 용지 — 항상 밝은 배경 + 어두운 본문(테마 무관). 에디터 인라인 색이 그대로 읽힘 */}
-      <div className="overflow-hidden rounded-xl border border-line bg-white text-[#2b2f36] shadow-card">
-        {page.content ? (
-          <PageContent
-            html={page.content}
-            className="doc-content px-5 py-7 text-[14px] leading-7 sm:px-9 sm:py-10
-                       [&_a]:text-[#1a55d6] [&_a]:underline
-                       [&_h1]:mb-3 [&_h1]:mt-6 [&_h1]:text-xl [&_h1]:font-bold
-                       [&_h2]:mb-2.5 [&_h2]:mt-6 [&_h2]:text-lg [&_h2]:font-bold
-                       [&_h3]:mb-2 [&_h3]:mt-5 [&_h3]:font-bold
-                       [&_p]:my-2 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-1
-                       [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse
-                       [&_td]:border [&_td]:border-[#e2e5ea] [&_td]:p-2
-                       [&_th]:border [&_th]:border-[#e2e5ea] [&_th]:p-2
-                       [&_img]:my-2 [&_img]:max-w-full"
-          />
-        ) : (
-          <p className="px-9 py-10 text-center text-sub">내용이 없습니다.</p>
-        )}
-      </div>
+      {/* 박스·그림자 없이 내용을 너비에 맞춰 표시(테마 색상 사용) */}
+      {page.content ? (
+        <PageContent
+          html={page.content}
+          className="doc-content py-2 text-[14px] leading-7 text-text
+                     [&_a]:text-accent [&_a]:underline
+                     [&_h1]:mb-3 [&_h1]:mt-6 [&_h1]:text-xl [&_h1]:font-bold
+                     [&_h2]:mb-2.5 [&_h2]:mt-6 [&_h2]:text-lg [&_h2]:font-bold
+                     [&_h3]:mb-2 [&_h3]:mt-5 [&_h3]:font-bold
+                     [&_p]:my-2 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-1
+                     [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse
+                     [&_td]:border [&_td]:border-line [&_td]:p-2
+                     [&_th]:border [&_th]:border-line [&_th]:p-2
+                     [&_img]:my-2 [&_img]:max-w-full"
+        />
+      ) : (
+        <p className="py-10 text-center text-sub">내용이 없습니다.</p>
+      )}
     </div>
   );
 }

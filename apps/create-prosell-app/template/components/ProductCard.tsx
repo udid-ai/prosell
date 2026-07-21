@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { priceOf, thumbOf, thumbHoverOf, won, type ProductItem } from "@/lib/prosell";
 import ProductCardActions from "./ProductCardActions";
+import LazyImg from "./LazyImg";
 
 // 상품 이미지 비율(레거시 design.image_rate) — 높이/너비. 1=정사각형, 1.25=세로형 등.
 // 쇼핑몰 설정값을 .env(NEXT_PUBLIC_PRODUCT_IMAGE_RATE)에 지정. 미설정 시 1(정사각형).
@@ -10,7 +11,7 @@ const IMAGE_ASPECT = `1 / ${IMAGE_RATE}`; // CSS aspect-ratio(너비/높이)
 // 디자인 레이어 — 카드 모양/스타일은 여기서 자유롭게 변경.
 // 레거시 category 스킨 items.* 표기 항목을 스타터 기본으로 모두 노출:
 //   썸네일·상태뱃지·브랜드·상품명·(원가취소선/할인율/판매가)·무료배송·리뷰수/평점·판매량.
-export default function ProductCard({ item, adultAllowed = false }: { item: ProductItem; adultAllowed?: boolean }) {
+export default function ProductCard({ item, adultAllowed = false, priority = false }: { item: ProductItem; adultAllowed?: boolean; priority?: boolean }) {
   const o = item.origin ?? ({} as NonNullable<ProductItem["origin"]>);
   const id = o.id;
   const thumb = thumbOf(item);
@@ -62,16 +63,14 @@ export default function ProductCard({ item, adultAllowed = false }: { item: Prod
         {/* 이미지 박스 — 쇼핑몰 설정 비율(image_rate) 적용. overflow-hidden 으로 hover 확대 클립. */}
         <div className="relative overflow-hidden" style={{ aspectRatio: IMAGE_ASPECT }}>
           {thumb ? (
-            // eslint-disable-next-line @next/next/no-img-element
             // 1장이면 hover 시 확대(scale), 2장 이상이면 두 번째 이미지로 전환(아래 오버레이).
-            <img src={thumb} alt="" className={`block h-full w-full object-cover [transition:all_.5s_ease] ${dim ? "opacity-40" : ""} ${!hasSecond && !dim ? "group-hover:scale-[1.3]" : ""}`} />
+            <LazyImg src={thumb} alt="" priority={priority} className={`block h-full w-full object-cover [transition:all_.5s_ease] ${dim ? "opacity-40" : ""} ${!hasSecond && !dim ? "group-hover:scale-[1.3]" : ""}`} />
           ) : (
             <div className="grid h-full w-full place-items-center bg-surface text-xs text-sub">이미지 없음</div>
           )}
           {/* 두 번째 이미지 — hover 시 전환(레거시 thumb2). 첫 이미지와 다른 2장 이상일 때만. */}
           {hasSecond && !dim && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={thumb2} alt="" className="absolute inset-0 block h-full w-full object-cover opacity-0 [transition:all_.5s_ease] group-hover:opacity-100" />
+            <LazyImg src={thumb2} alt="" className="absolute inset-0 block h-full w-full object-cover opacity-0 [transition:all_.5s_ease] group-hover:opacity-100" />
           )}
           {/* hover 액션 레이어(장바구니/바로구매/관심상품) — 옵션 있으면 모달, 없으면 즉시 담기. 성인 커버 시 숨김. */}
           {id && !cover ? <ProductCardActions productsId={id} optionId={optionId} title={o.title} hasOptions={hasOptions} soldout={dim} canOrder={orderOpen} /> : null}

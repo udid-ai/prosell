@@ -449,7 +449,7 @@ export default function OrderClient() {
   })();
 
   return (
-    <div className="mx-auto max-w-content p-4 sm:p-6">
+    <div className="mx-auto max-w-content px-4 py-4 sm:py-6">
       <h1 className="text-2xl font-bold text-text">주문/결제</h1>
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_340px] lg:items-start">
@@ -1162,7 +1162,7 @@ const DELIVERY_MSGS = [
 
 function Notice({ msg, href, cta }: { msg: string; href: string; cta: string }) {
   return (
-    <div className="mx-auto max-w-content p-6">
+    <div className="mx-auto max-w-content px-4 py-6">
       <h1 className="text-2xl font-bold text-text">주문하기</h1>
       <div className="mt-6 rounded-md border border-line bg-card p-12 text-center text-sub">
         {msg}

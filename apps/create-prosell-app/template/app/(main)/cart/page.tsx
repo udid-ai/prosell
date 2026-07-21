@@ -160,7 +160,7 @@ export default function CartPage() {
   }
 
   return (
-    <div className="mx-auto max-w-content p-4 sm:p-6">
+    <div className="mx-auto max-w-content px-4 py-4 sm:py-6">
       <div className="flex items-center">
         <h1 className="text-2xl font-bold text-text">장바구니</h1>
       </div>

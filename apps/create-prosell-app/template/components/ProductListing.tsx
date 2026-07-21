@@ -15,6 +15,9 @@ export default function ProductListing({
   query = {},
   demoFallback = true,
   adultAllowed = false,
+  showControls = true,
+  showPagination = true,
+  hideSorts,
 }: {
   items: ProductItem[];
   total: number;
@@ -25,16 +28,21 @@ export default function ProductListing({
   query?: Record<string, string>;
   demoFallback?: boolean; // 실데이터 없을 때 데모 폴백 여부(홈만 true, 카테고리는 false)
   adultAllowed?: boolean; // 뷰어 성인 권한(성인상품 이미지 노출 허용)
+  showControls?: boolean; // 상단 정렬/개수 컨트롤 노출(홈은 false)
+  showPagination?: boolean; // 하단 페이징 노출(홈은 false)
+  hideSorts?: string[]; // 숨길 정렬값(카테고리에서 "0" 등록순 제외 등)
 }) {
   return (
     <>
-      {total > 0 && (
+      {showControls && total > 0 && (
         <div className="mb-3 mt-2">
-          <ListControls total={total} order={order} limit={limit} basePath={basePath} query={query} />
+          <ListControls total={total} order={order} limit={limit} basePath={basePath} query={query} hideSorts={hideSorts} />
         </div>
       )}
       <ProductGrid items={items} demoFallback={demoFallback} adultAllowed={adultAllowed} />
-      <Pagination total={total} page={page} perPage={Number(limit) || 20} basePath={basePath} query={{ ...query, order, limit }} />
+      {showPagination && (
+        <Pagination total={total} page={page} perPage={Number(limit) || 20} basePath={basePath} query={{ ...query, order, limit }} />
+      )}
     </>
   );
 }

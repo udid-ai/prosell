@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = { title: "비회원 주문조회", robots: { index: false } };
 
-const outerCls = "mx-auto my-8 w-full max-w-content px-4 py-8 sm:px-6";
+const outerCls = "mx-auto my-8 w-full max-w-content px-4 py-8 sm:px-4";
 
 export default async function GuestOrderPage() {
   const gt = (await cookies()).get(GUEST_TOKEN_COOKIE)?.value || "";

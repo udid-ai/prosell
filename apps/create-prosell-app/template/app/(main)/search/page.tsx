@@ -39,7 +39,7 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
   const heading = keyword ? `‘${keyword}’ 검색 결과` : "전체 상품";
 
   return (
-    <div className="mx-auto max-w-content p-6">
+    <div className="mx-auto max-w-content px-4 py-6">
       {/* 페이지 내 검색바 — 키워드 정제/재검색(데스크탑·모바일 공통). 현재 필터는 새 검색 시 초기화. */}
       <div className="mx-auto max-w-xl">
         <SearchBar defaultValue={keyword} />

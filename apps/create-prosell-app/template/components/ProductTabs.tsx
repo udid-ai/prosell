@@ -151,7 +151,8 @@ export default function ProductTabs({
       {/* ── 상세정보 ── */}
       <div id="pd-detail" className={`py-8 ${anchorCls}`}>
         {detailHtml ? (
-          <article className="[&_img]:my-0 [&_img]:block [&_img]:h-auto [&_img]:max-w-full" dangerouslySetInnerHTML={{ __html: detailHtml }} />
+          // 상세설명 HTML 내 <img> 에도 loading="lazy" 주입(이미 지정된 것은 유지).
+          <article className="[&_img]:my-0 [&_img]:block [&_img]:h-auto [&_img]:max-w-full" dangerouslySetInnerHTML={{ __html: detailHtml.replace(/<img(?![^>]*\sloading=)/gi, '<img loading="lazy"') }} />
         ) : null}
 
         {/* 동영상/오디오(레거시 getVideoHTML/getAudiosHTML/getVideosHTML) */}

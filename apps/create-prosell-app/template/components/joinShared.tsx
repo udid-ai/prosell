@@ -9,7 +9,7 @@ export const smallBtnCls = "cursor-pointer whitespace-nowrap rounded-sm border-0
 export const inlineBtnCls = "cursor-pointer shrink-0 whitespace-nowrap rounded-sm border border-transparent bg-accent px-4 py-3 text-[15px] leading-[1.5] text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60";
 export const shellCls = "mx-auto my-8 max-w-[560px] rounded-md border border-line bg-card p-6";
 // 가입 흐름(약관/입력폼/완료) 전용 — 바깥은 테두리 없는 컨테이너 폭 영역(넓은 느낌), 안쪽 콘텐츠는 기존 폭(560px) 유지.
-export const joinOuterCls = "mx-auto my-8 w-full max-w-content px-4 py-8 sm:px-6";
+export const joinOuterCls = "mx-auto my-8 w-full max-w-content px-4 py-8 sm:px-4";
 export const joinContentCls = "mx-auto w-full max-w-[560px]";
 
 // 큰 버튼: 활성/비활성 클래스

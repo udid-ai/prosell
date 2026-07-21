@@ -1,6 +1,6 @@
 {
   "name": "create-prosell-app",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "프로셀 스토어프론트(starter) 스캐폴더 — npx create-prosell-app my-shop",
   "license": "MIT",
   "type": "module",

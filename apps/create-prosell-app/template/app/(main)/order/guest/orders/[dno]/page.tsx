@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = { title: "비회원 주문 상세", robots: { index: false } };
 
-const outerCls = "mx-auto my-8 w-full max-w-content px-4 py-8 sm:px-6";
+const outerCls = "mx-auto my-8 w-full max-w-content px-4 py-8 sm:px-4";
 const cardCls = "rounded-md border border-line bg-card p-6";
 
 // 비회원 주문 상세 — guest 토큰으로 조회. 회원 상세와 동일 UI, 클레임/영수증 등 회원 전용 액션은 숨김.

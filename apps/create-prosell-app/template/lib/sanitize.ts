@@ -16,6 +16,10 @@ const OPTIONS: sanitizeHtml.IOptions = {
     "div", "iframe",
     // 글자 크기·색상 — Tiptap TextStyle 이 span[style] 로 내보낸다.
     "span",
+    // 형광펜(글자 배경색) — Tiptap Highlight 가 mark[style] 로 내보낸다.
+    "mark",
+    // 표 — Tiptap Table 확장(table > colgroup/col + tbody > tr > th/td).
+    "table", "colgroup", "col", "thead", "tbody", "tr", "th", "td",
   ],
   allowedAttributes: {
     a: ["href", "target", "rel"],
@@ -24,13 +28,33 @@ const OPTIONS: sanitizeHtml.IOptions = {
     div: ["data-youtube-video"],
     iframe: ["src", "width", "height", "allow", "allowfullscreen", "frameborder", "title"],
     span: ["style"],
+    // 형광펜 — mark[style=background-color] (+ data-color).
+    mark: ["style", "data-color"],
+    // 텍스트 정렬 — Tiptap TextAlign 이 블록노드에 style="text-align:…" 로 내보낸다.
+    p: ["style"], h3: ["style"], h4: ["style"],
+    // 표 — 크기/병합 속성.
+    table: ["style"],
+    col: ["style", "span"],
+    th: ["colspan", "rowspan", "colwidth"],
+    td: ["colspan", "rowspan", "colwidth"],
   },
-  // span[style] 은 색상·글자크기만 허용(임의 CSS 로 레이아웃 깨기·트래킹 방지).
+  // 인라인 style 화이트리스트 — span 은 색상·글자크기, 블록노드는 정렬만(임의 CSS 차단).
   allowedStyles: {
     span: {
       color: [/^#(0x)?[0-9a-f]+$/i, /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/],
       "font-size": [/^\d{1,3}(?:\.\d+)?(?:px|em|rem|%)$/],
+      // 글꼴 — 이름/따옴표/콤마/공백만(괄호·세미콜론 등 차단으로 url()·expression 방지).
+      "font-family": [/^[\w\s\-,'"가-힣]+$/],
     },
+    p: { "text-align": [/^(left|right|center|justify)$/] },
+    h3: { "text-align": [/^(left|right|center|justify)$/] },
+    h4: { "text-align": [/^(left|right|center|justify)$/] },
+    mark: {
+      "background-color": [/^#(0x)?[0-9a-f]+$/i, /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/],
+    },
+    // 표 크기 — Tiptap resizable 이 min-width/width(px) 로 내보낸다.
+    table: { "min-width": [/^\d+px$/], width: [/^\d+px$/] },
+    col: { width: [/^\d+px$/], "min-width": [/^\d+px$/] },
   },
   // http/https/mailto 만 — javascript:, data: 등은 차단
   allowedSchemes: ["http", "https", "mailto"],
@@ -38,8 +62,17 @@ const OPTIONS: sanitizeHtml.IOptions = {
   // 이 목록 밖 호스트의 iframe 은 제거된다(임의 사이트 임베드 차단).
   allowedIframeHostnames: VIDEO_HOSTS,
   transformTags: {
-    // 외부 링크는 새 탭 + rel 고정(탭내빙 방지)
-    a: sanitizeHtml.simpleTransform("a", { target: "_blank", rel: "noopener noreferrer nofollow" }),
+    // 링크 «새 창» 옵션 존중 — target=_blank 면 탭내빙 방지 rel 부여, 아니면 같은 창(target 제거).
+    a: (tagName, attribs) => {
+      const out: Record<string, string> = { ...attribs };
+      if (out.target === "_blank") {
+        out.rel = "noopener noreferrer nofollow";
+      } else {
+        delete out.target;
+        out.rel = "nofollow";
+      }
+      return { tagName, attribs: out };
+    },
   },
   // 빈 문단은 줄바꿈 의미가 있어 유지
   nonTextTags: ["style", "script", "textarea", "option", "noscript"],

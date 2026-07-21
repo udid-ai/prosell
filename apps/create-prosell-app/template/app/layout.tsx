@@ -16,16 +16,15 @@ export const metadata = {
   description: "프로셀 API 기반 AI 스토어프론트",
 };
 
-// 첫 페인트 전에 테마 클래스를 적용 → 다크모드 깜빡임 방지.
-const noFlash = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark');}catch(e){}})();`;
-
 // 루트 레이아웃 — html/body/공통(폰트·테마·globals)만. 헤더/푸터 등 크롬은 (main) 그룹,
 // 영수증 등 팝업은 (popup) 그룹이 각자의 레이아웃으로 담당한다.
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" className={pretendard.variable} suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: noFlash }} />
+        {/* 첫 페인트 전 테마 적용(플래시 방지). 정적 파일 src 참조 —
+            인라인 콘텐츠가 없어 React 19 의 «script 태그» 렌더 경고가 나지 않는다. */}
+        <script src="/theme-init.js" />
       </head>
       <body className="m-0 bg-bg font-sans text-text antialiased">{children}</body>
     </html>

@@ -8,6 +8,8 @@ import "swiper/css/navigation";
 import { formatDateTime } from "@/lib/format";
 import type { ProductReview, ProductReviewSummary } from "@/lib/prosell";
 import ReviewDetailModal from "./ReviewDetailModal";
+import LazyImg from "./LazyImg";
+import { SWIPER_COLS_CSS } from "./swiperColsStyle";
 
 // 헤더(상품상세)와 Tabs 사이 «포토리뷰 요약» 캐러셀 — 3개씩(반응형) 노출, 내용 3줄 요약, 좌우 버튼.
 function Stars({ score }: { score: number }) {
@@ -22,7 +24,7 @@ function Stars({ score }: { score: number }) {
   );
 }
 
-export default function ReviewSwiper({ items, summary }: { items: ProductReview[]; summary?: ProductReviewSummary }) {
+export default function ReviewSwiper({ items, summary, vertical }: { items: ProductReview[]; summary?: ProductReviewSummary; vertical?: boolean }) {
   const prevRef = useRef<HTMLButtonElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
   const [detail, setDetail] = useState<number | null>(null); // 클릭 시 상세 모달 인덱스
@@ -41,11 +43,14 @@ export default function ReviewSwiper({ items, summary }: { items: ProductReview[
 
   return (
     <section className="mt-10">
+      <style>{SWIPER_COLS_CSS}</style>
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-bold text-text">
-          {highPct !== null
-            ? <>4점 이상 리뷰가 <span className="font-bold text-[#ff9f0a]">{highPct}%</span> 예요</>
-            : "포토리뷰"}
+          {vertical
+            ? "상품리뷰"
+            : highPct !== null
+              ? <>4점 이상 리뷰가 <span className="font-bold text-[#ff9f0a]">{highPct}%</span> 예요</>
+              : "포토리뷰"}
         </h2>
         <div className="flex gap-1.5">
           <button ref={prevRef} type="button" aria-label="이전" className={navBtn}>
@@ -59,11 +64,13 @@ export default function ReviewSwiper({ items, summary }: { items: ProductReview[
 
       <Swiper
         modules={[Navigation]}
-        spaceBetween={16}
-        slidesPerView={1.15}
-        breakpoints={{ 640: { slidesPerView: 2 }, 1024: { slidesPerView: 3 } }}
-        // 슬라이드 높이를 내용이 아닌 «최대치»로 통일 → 짧은 리뷰도 같은 높이(카드 h-full)
-        className="[&_.swiper-slide]:h-auto [&_.swiper-wrapper]:items-stretch"
+        spaceBetween={0}
+        slidesPerView={vertical ? 2 : 1.15}
+        breakpoints={vertical
+          ? { 640: { slidesPerView: 3 }, 1024: { slidesPerView: 4 }, 1280: { slidesPerView: 5 } }
+          : { 640: { slidesPerView: 2 }, 1024: { slidesPerView: 3 } }}
+        // 슬라이드 폭/높이는 globals.css 의 .hswiper/.rcols-* 로 초기화 전부터 고정(플래시 방지).
+        className={"hswiper " + (vertical ? "rcols-v" : "rcols-h")}
         onBeforeInit={(swiper) => {
           const nav = swiper.params.navigation;
           if (nav && typeof nav !== "boolean") {
@@ -75,28 +82,50 @@ export default function ReviewSwiper({ items, summary }: { items: ProductReview[
         {sorted.map((r, i) => {
           const photo = r.files.find((f) => f.src);
           return (
-            <SwiperSlide key={r.id} className="h-auto">
-              {/* 가로형: 이미지 왼쪽 + 내용 오른쪽. 클릭 시 상세 모달 */}
-              <button type="button" onClick={() => setDetail(i)}
-                className="flex h-full w-full items-stretch overflow-hidden rounded-lg border border-line bg-card text-left transition-colors hover:border-accent">
-                {photo && (
-                  <div className="aspect-square w-24 shrink-0 self-stretch overflow-hidden bg-surface sm:w-28">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={photo.thumb || photo.src!} alt="" className="h-full w-full object-cover" loading="lazy" />
+            <SwiperSlide key={r.id} className="!h-auto self-stretch">
+              {vertical ? (
+                // 세로형: 이미지 위 + 내용 아래.
+                <button type="button" onClick={() => setDetail(i)}
+                  className="flex h-full w-full flex-col overflow-hidden rounded-lg border border-line bg-card text-left transition-colors hover:border-accent">
+                  <div className="aspect-square w-full overflow-hidden bg-surface">
+                    {photo ? (
+                      <LazyImg src={photo.thumb || photo.src!} alt="" priority className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-[12px] text-sub">사진 없음</div>
+                    )}
                   </div>
-                )}
-                <div className="flex min-w-0 flex-1 flex-col p-3">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex min-w-0 flex-1 flex-col p-3">
                     <Stars score={r.score} />
+                    <p className="mt-1 truncate text-[12px] text-sub">
+                      <span className="font-medium text-text">{r.name || "구매자"}</span>
+                      {r.dt ? <> · {formatDateTime(r.dt, false)}</> : null}
+                    </p>
+                    {r.title ? <p className="mt-1 truncate text-[13px] font-bold text-text">{r.title}</p> : null}
+                    {r.content ? <p className="mt-1 line-clamp-2 whitespace-pre-line text-[13px] leading-relaxed text-text">{r.content}</p> : null}
                   </div>
-                  <p className="mt-1 truncate text-[12px] text-sub">
-                    <span className="font-medium text-text">{r.name || "구매자"}</span>
-                    {r.dt ? <> · {formatDateTime(r.dt, false)}</> : null}
-                  </p>
-                  {r.title ? <p className="mt-1 truncate text-[13px] font-bold text-text">{r.title}</p> : null}
-                  {r.content ? <p className="mt-1 line-clamp-2 whitespace-pre-line text-[13px] leading-relaxed text-text">{r.content}</p> : null}
-                </div>
-              </button>
+                </button>
+              ) : (
+                // 가로형: 이미지 왼쪽 + 내용 오른쪽. 클릭 시 상세 모달
+                <button type="button" onClick={() => setDetail(i)}
+                  className="flex h-full w-full items-stretch overflow-hidden rounded-lg border border-line bg-card text-left transition-colors hover:border-accent">
+                  {photo && (
+                    <div className="aspect-square w-24 shrink-0 self-stretch overflow-hidden bg-surface sm:w-28">
+                      <LazyImg src={photo.thumb || photo.src!} alt="" priority className="h-full w-full object-cover" />
+                    </div>
+                  )}
+                  <div className="flex min-w-0 flex-1 flex-col p-3">
+                    <div className="flex items-center gap-1.5">
+                      <Stars score={r.score} />
+                    </div>
+                    <p className="mt-1 truncate text-[12px] text-sub">
+                      <span className="font-medium text-text">{r.name || "구매자"}</span>
+                      {r.dt ? <> · {formatDateTime(r.dt, false)}</> : null}
+                    </p>
+                    {r.title ? <p className="mt-1 truncate text-[13px] font-bold text-text">{r.title}</p> : null}
+                    {r.content ? <p className="mt-1 line-clamp-2 whitespace-pre-line text-[13px] leading-relaxed text-text">{r.content}</p> : null}
+                  </div>
+                </button>
+              )}
             </SwiperSlide>
           );
         })}

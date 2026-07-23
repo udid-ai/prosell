@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import type { NextResponse } from "next/server";
 import { renderContent } from "./sanitize";
@@ -113,23 +114,23 @@ function authHeaders(token?: string): Record<string, string> {
 }
 
 // 비회원 공통 데이터(상품/카테고리/푸터/쿠폰/디자인페이지 등)의 ISR 캐시 주기(초).
-// 배포: 600초(10분, 백엔드 부하 최소화) ISR.
+//  · 배포: 600초(10분, 백엔드 부하 최소화).
+//  · 개발: 5초 — 매 렌더 백엔드 왕복(no-store)을 없애 페이지 이동을 가볍게 하면서도,
+//         관리자에서 값을 고치면 5초 뒤 새로고침이면 반영된다(즉시 확인이 필요하면 revalidateTag).
 const STATIC_REVALIDATE = 600;
+const DEV_REVALIDATE = 5;
 const IS_PROD = process.env.NODE_ENV === "production";
+const SHARED_REVALIDATE = IS_PROD ? STATIC_REVALIDATE : DEV_REVALIDATE;
 
-// 공용(비회원 공유) 데이터의 캐시 옵션.
-//  · 배포: STATIC_REVALIDATE ISR 공유 캐시(DB 부하↓ — 초당 100건도 주기당 1회로 수렴).
-//  · 개발: no-store(항상 최신). dev 온디스크 ISR 재검증이 불안정해 stale 이 남는 문제를 근본 제거하고
-//         '개발은 수정 즉시 반영' 의도를 확실히 지킨다.
+// 공용(비회원 공유) 데이터의 캐시 옵션 — ISR 공유 캐시(DB 부하↓, 초당 100건도 주기당 1회로 수렴).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isrOpt(tags?: string[]): any {
-  if (!IS_PROD) return { cache: "no-store" };
-  return { next: { revalidate: STATIC_REVALIDATE, ...(tags && tags.length ? { tags } : {}) } };
+  return { next: { revalidate: SHARED_REVALIDATE, ...(tags && tags.length ? { tags } : {}) } };
 }
 
 // 상품 GET 캐시 정책(토큰 인지).
 //  · 회원(토큰) 응답은 등급가 개인화라 절대 공유 금지 → no-store (개인 데이터 유출 방지).
-//  · 비회원은 공용 isrOpt (배포 ISR / 개발 no-store).
+//  · 비회원은 공용 isrOpt (배포 10분 / 개발 5초).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function cacheOpt(token?: string): any {
   return token ? { cache: "no-store" } : isrOpt();
@@ -648,13 +649,14 @@ export function certifyLaunchUrl(redirectUri: string, state: string): string {
 
 /** 약관 본문 조회. id=service|privacy(가입) / order_service|order_privacy|order_entrust|order_guest(주문) */
 export type TermsId = "service" | "privacy" | "order_service" | "order_privacy" | "order_entrust" | "order_guest";
-export async function fetchTerms(id: TermsId): Promise<string> {
+// 약관은 회원 무관 공통 콘텐츠 → 공유 ISR(개발 5초/배포 10분) + 요청 내 dedupe.
+export const fetchTerms = cache(async function fetchTerms(id: TermsId): Promise<string> {
   const e = env();
   if (!e.PROSELL_API_BASE || !e.PROSELL_CLIENT_ID) return "";
   try {
     const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/member/terms?id=${id}`, {
       headers: { Accept: "application/json", "X-App-Client-Id": e.PROSELL_CLIENT_ID },
-      cache: "no-store",
+      ...isrOpt([`terms-${id}`]),
     });
     if (!res.ok) return "";
     const data = (await res.json()) as { content?: string };
@@ -662,7 +664,7 @@ export async function fetchTerms(id: TermsId): Promise<string> {
   } catch {
     return "";
   }
-}
+});
 export type SignupResult = { ok: true; mid: number; uid: string } | { ok: false; error: string };
 
 type VerifyChannel = "sms" | "email";
@@ -804,14 +806,14 @@ export type ShopFooter = {
 
 /** 쇼핑몰 푸터 정보(회사/법적고지/계좌/호스팅) 조회 — 비회원(client_id). (GET /api/v2/shop/footer)
  *  백엔드 Redis 캐시(10분) 적용. 서버사이드 전용. 미설정/실패 시 null. */
-export async function fetchFooter(): Promise<ShopFooter | null> {
+export const fetchFooter = cache(async function fetchFooter(): Promise<ShopFooter | null> {
   const e = env();
   if (!e.PROSELL_API_BASE || !e.PROSELL_CLIENT_ID) return null;
   try {
     const res = await fetch(`${e.PROSELL_API_BASE}/api/v2/shop/footer`, {
       headers: { Accept: "application/json", "X-App-Client-Id": e.PROSELL_CLIENT_ID },
-      // 캐시는 백엔드 Redis 가 주(主, 600초, 회사정보 저장 시 무효화). 스타터는 가벼운 60초 ISR.
-      // 개발 3초 / 배포 10분. 관리자 수정 후 즉시 반영이 필요하면 revalidateTag("shop-footer") 로 퍼지(웹훅 연동 시).
+      // 캐시는 백엔드 Redis 가 주(主, 600초, 회사정보 저장 시 무효화). 스타터는 그 앞단 ISR.
+      // 개발 5초 / 배포 10분. 관리자 수정 후 즉시 반영이 필요하면 revalidateTag("shop-footer") 로 퍼지(웹훅 연동 시).
       ...isrOpt(["shop-footer"]),
     });
     if (!res.ok) return null;
@@ -820,7 +822,7 @@ export async function fetchFooter(): Promise<ShopFooter | null> {
   } catch {
     return null;
   }
-}
+});
 
 /** 쇼핑몰 주문 정책 — 비회원(client_id). (GET /api/v2/shop/policy)
  *  order_guest: 0=비회원 주문 불가(로그인 필수) / 1=바로 가능 / 2=로그인 경유(로그인 화면에서 «비회원 구매» 선택).
@@ -1042,7 +1044,7 @@ export async function fetchAddoptions(ids: number[], token?: string): Promise<Ad
 }
 
 /** 상품 상세 조회 — 신규 스토어프론트 API. (GET /api/v2/products/view/{id})
- *  로그인 토큰이면 등급가 반영(개인화 → no-store). 비회원은 공통가라 ISR 캐시(cacheOpt, 개발 3초/배포 10분). 없으면 null. */
+ *  로그인 토큰이면 등급가 반영(개인화 → no-store). 비회원은 공통가라 ISR 캐시(cacheOpt, 개발 5초/배포 10분). 없으면 null. */
 export type ProductCoupon = {
   id: number; name: string; title: string; coupon_type: number;
   discount_type: number; discount_price: number; discount_percent: number;
@@ -1056,7 +1058,7 @@ export async function fetchProductCoupons(productsId: number | string): Promise<
   try {
     const u = new URL(`${e.PROSELL_API_BASE}/api/v2/products/coupon`);
     u.searchParams.set("products_id", String(productsId));
-    // 다운로드 쿠폰 목록은 비회원 공통 데이터 → 공유 캐시(ISR, 개발 3초/배포 10분).
+    // 다운로드 쿠폰 목록은 비회원 공통 데이터 → 공유 캐시(ISR, 개발 5초/배포 10분).
     const res = await fetch(u.toString(), { headers: { Accept: "application/json", "X-App-Client-Id": e.PROSELL_CLIENT_ID }, ...isrOpt() });
     const j = await res.json().catch(() => null);
     return res.ok && Array.isArray(j?.data?.items) ? (j.data.items as ProductCoupon[]) : [];
@@ -1153,8 +1155,8 @@ export async function restockSubmit(productId: string, hp: string, token?: strin
 export type ShopPage = { pid: string; title: string | null; slogan: string | null; mode: number; content: string | null };
 
 /** 디자인 페이지 조회 — 비회원(client_id). (GET /api/v2/page?pid=) 읽기 전용.
- *  pid 예: policy/privacy. 백엔드 Redis 캐시(10분) + ISR(개발 3초/배포 10분). 없으면 null. */
-export async function fetchPage(pid: string): Promise<ShopPage | null> {
+ *  pid 예: policy/privacy. 백엔드 Redis 캐시(10분) + ISR(개발 5초/배포 10분). 없으면 null. */
+export const fetchPage = cache(async function fetchPage(pid: string): Promise<ShopPage | null> {
   const e = env();
   if (!e.PROSELL_API_BASE || !e.PROSELL_CLIENT_ID || !pid) return null;
   try {
@@ -1168,7 +1170,7 @@ export async function fetchPage(pid: string): Promise<ShopPage | null> {
   } catch {
     return null;
   }
-}
+});
 
 // ── 카테고리(네비게이션) ───────────────────────────────────────
 export type CategoryNode = {
@@ -1185,14 +1187,14 @@ type CategoryRow = { origin?: { id: number; onoff: number; title: string | null;
 /** 카테고리 트리 조회 — 비회원(client_id). (GET /api/v2/categories)
  *  onoff=1 만, code 로 부모-자식 트리 구성. 초기 렌더에서 1회 호출(ISR 300초 캐시 + 태그).
  *  ⇒ 100 TPS 여도 백엔드 호출은 5분당 ~1회. 서버사이드 전용. */
-export async function fetchCategories(): Promise<CategoryNode[]> {
+export const fetchCategories = cache(async function fetchCategories(): Promise<CategoryNode[]> {
   const e = env();
   if (!e.PROSELL_API_BASE || !e.PROSELL_CLIENT_ID) return [];
   try {
     const u = `${e.PROSELL_API_BASE}/api/v2/categories?limit=1000&order=1&expand=origin`;
     const res = await fetch(u, {
       headers: { Accept: "application/json", "X-App-Client-Id": e.PROSELL_CLIENT_ID },
-      // 카테고리는 자주 안 바뀜 → 개발 3초 / 배포 10분. 관리자 변경 즉시 반영이 필요하면 revalidateTag("categories").
+      // 카테고리는 자주 안 바뀜 → 개발 5초 / 배포 10분. 관리자 변경 즉시 반영이 필요하면 revalidateTag("categories").
       ...isrOpt(["categories"]),
     });
     if (!res.ok) return [];
@@ -1205,7 +1207,7 @@ export async function fetchCategories(): Promise<CategoryNode[]> {
   } catch {
     return [];
   }
-}
+});
 
 /** 평평한 카테고리 목록을 code 기준 트리로 변환. 부모 code = 자신의 code 에서 마지막 '-구간' 제거. */
 function buildCategoryTree(rows: { id: number; title: string | null; code: string; position: number }[]): CategoryNode[] {

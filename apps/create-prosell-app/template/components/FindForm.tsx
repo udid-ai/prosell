@@ -179,7 +179,7 @@ function FindPwPanel({ reqUpwConfig = 0 }: { reqUpwConfig?: number }) {
   async function reset() {
     setMsg("");
     if (!upw) return setMsg("새 비밀번호를 입력해 주세요.");
-    const ruleErr = validatePassword(upw, reqUpw);
+    const ruleErr = validatePassword(upw, reqUpw, { uid, email: channel === "email" ? contact : "", hp: channel === "hp" ? contact : "" });
     if (ruleErr) return setMsg(ruleErr.replace("비밀번호는", "새 비밀번호는"));
     if (upw !== upwRe) return setMsg("비밀번호가 일치하지 않습니다.");
     setBusy(true);
@@ -208,8 +208,8 @@ function FindPwPanel({ reqUpwConfig = 0 }: { reqUpwConfig?: number }) {
         <label className={labelCls}>새 비밀번호</label>
         <p className="mt-1 text-[12px] text-sub">비밀번호 규칙: {passwordRule(reqUpw).hint}</p>
         <input value={upw} onChange={(e) => setUpw(e.target.value)} type="password" maxLength={50} placeholder={passwordRule(reqUpw).hint} className={fieldCls} />
-        {upw && validatePassword(upw, reqUpw) && (
-          <p className="mt-1 text-[12px] text-sale">{validatePassword(upw, reqUpw).replace("비밀번호는", "새 비밀번호는")}</p>
+        {upw && validatePassword(upw, reqUpw, { uid, email: channel === "email" ? contact : "", hp: channel === "hp" ? contact : "" }) && (
+          <p className="mt-1 text-[12px] text-sale">{validatePassword(upw, reqUpw, { uid, email: channel === "email" ? contact : "", hp: channel === "hp" ? contact : "" }).replace("비밀번호는", "새 비밀번호는")}</p>
         )}
         <label className={labelCls}>새 비밀번호 확인</label>
         <input value={upwRe} onChange={(e) => setUpwRe(e.target.value)} onKeyDown={(e) => e.key === "Enter" && reset()} type="password" maxLength={50} placeholder="새 비밀번호 확인" className={fieldCls} />

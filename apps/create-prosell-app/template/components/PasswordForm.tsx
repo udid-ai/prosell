@@ -62,7 +62,12 @@ export default function PasswordForm({ reqUpw }: { reqUpw?: number }) {
       </div>
       <div>
         <label className={labelCls}>새 비밀번호</label>
+        <p className="mt-1 text-[12px] text-sub">비밀번호 규칙: {passwordRule(reqUpw).hint}</p>
         <input value={newPw} onChange={(e) => setNewPw(e.target.value)} type="password" maxLength={20} placeholder={passwordRule(reqUpw).hint} autoComplete="new-password" className={fieldCls} />
+        {/* 개인정보 유추 차단은 회원 정보를 아는 서버가 최종 확인한다(이 폼에는 아이디·연락처가 없음). */}
+        {newPw && validatePassword(newPw, reqUpw) && (
+          <p className="mt-1 text-[12px] text-sale">{validatePassword(newPw, reqUpw).replace("비밀번호는", "새 비밀번호는")}</p>
+        )}
       </div>
       <div>
         <label className={labelCls}>새 비밀번호 확인</label>

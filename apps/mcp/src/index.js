@@ -81,7 +81,7 @@ async function specFile(rel) {
 // 서버 인스턴스를 만들고 모든 resource/tool 을 등록해 반환한다.
 // stdio(단일 쇼핑몰)와 HTTP 게이트웨이(요청별 쇼핑몰) 양쪽에서 재사용한다.
 export function buildServer() {
-const server = new McpServer({ name: "prosell-mcp", version: "0.32.8" });
+const server = new McpServer({ name: "prosell-mcp", version: "0.32.9" });
 
 // 원격 게이트웨이 모드: 인증은 커넥터 OAuth(합성 토큰)로 처리된다.
 // 이 모드에서는 connect/login(로컬 루프백+브라우저 전제)이 의미가 없고 오히려 서버에서
@@ -1451,17 +1451,20 @@ const memberListParams = {
   level: z.number().int().optional().describe("회원등급으로 필터"),
   page: z.number().int().min(1).optional(),
   limit: z.number().int().min(1).max(1000).optional(),
-  expand: z.string().optional().describe("origin(기본)/info/files 조합. 활동정보·파일까지 보려면 origin,info,files"),
+  expand: z.string().optional().describe("origin(기본)/info/files/agree 조합. 활동정보·파일·동의내역까지 보려면 origin,info,files,agree"),
 };
 
 crudTool(
   "members",
   "회원계정 조회(운영자, 조회 전용). action: list|get|dormant|dropout. " +
     "list/dormant(휴면 state=2)/dropout(탈퇴 state=3)는 가입일·아이디(uid)·휴대폰(hp)·등급(level) 필터(기본 expand=origin). " +
-    "get 은 mid 단건으로 origin·info·files 반환. ⚠️PII(이름/연락처/이메일/주소/계좌)가 복호화되어 포함되니 취급에 주의.",
+    "get 은 mid 단건으로 origin·info·files·agree 반환. " +
+    "agree=동의내역(code 1~9 가입필수 / 11~19 광고전송 / 21~29 개인정보선택)으로 동의일(agree_dt)과 " +
+    "광고 수신동의 2년 확인 기한(expire_dt)을 포함한다. 동의한 적 없는 항목은 아예 빠지므로 '미동의'와 '철회'는 다르다. " +
+    "⚠️PII(이름/연락처/이메일/주소/계좌)가 복호화되어 포함되니 취급에 주의.",
   {
     list: (p) => listMembers(p),
-    get: ({ mid, expand }) => getMember(mid, expand || "origin,info,files"),
+    get: ({ mid, expand }) => getMember(mid, expand || "origin,info,files,agree"),
     dormant: (p) => listDormantMembers(p),
     dropout: (p) => listDropoutMembers(p),
   },

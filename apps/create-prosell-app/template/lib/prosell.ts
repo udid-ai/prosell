@@ -3091,9 +3091,9 @@ async function couponBoxAction(token: string, body: Record<string, unknown>): Pr
   } catch { return { ok: false, error: "요청 중 오류가 발생했습니다." }; }
 }
 
-// PIN 쿠폰 등록. pincode=영숫자. 성공 시 새 보유쿠폰 id 반환.
+// PIN 쿠폰 등록. pincode=한글 포함 문자·숫자(특수문자/공백 불가). 성공 시 새 보유쿠폰 id 반환.
 export function registerCouponCode(token: string, pincode: string): Promise<{ ok: boolean; id?: number; count?: number; error?: string }> {
-  if (!/^[a-zA-Z0-9]+$/.test(pincode)) return Promise.resolve({ ok: false, error: "쿠폰 번호를 확인해 주세요." });
+  if (!/^[\p{L}\p{N}]+$/u.test(pincode)) return Promise.resolve({ ok: false, error: "쿠폰 번호를 확인해 주세요." });
   return couponBoxAction(token, { action: "code", pincode });
 }
 // 등급쿠폰 1건 다운로드(num=1~4).

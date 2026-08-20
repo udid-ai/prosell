@@ -143,7 +143,8 @@ export default function JoinStep2({ config }: Props) {
     setMsg("");
     if (!uidIsEmail && uid.trim().length < 3) { setMsg("아이디를 3자 이상 입력해 주세요."); return; }
     if (!uidIsEmail && uidTaken === true) { setMsg("이미 사용 중인 아이디입니다."); return; }
-    { const e = validatePassword(upw, f.upw); if (e) { setMsg(e); return; } } // 쇼핑몰 비밀번호 규칙(req_upw)
+    // 쇼핑몰 비밀번호 규칙(req_upw). ISMS 규칙(5)은 입력된 개인정보를 유추 차단 대상으로 함께 넘긴다.
+    { const e = validatePassword(upw, f.upw, { uid, email, name, birth, hp, tel }); if (e) { setMsg(e); return; } }
     if (upw !== upwRe) { setMsg("비밀번호가 일치하지 않습니다."); return; }
     if (need("nick") && !nick.trim()) { setMsg("닉네임을 입력해 주세요."); return; }
     if (need("name") && !needCertify && !name.trim()) { setMsg("이름을 입력해 주세요."); return; }
@@ -232,7 +233,11 @@ export default function JoinStep2({ config }: Props) {
         {!uidIsEmail && !uidChecking && uidTaken === false && <p className="mt-1 text-[13px] text-success">사용 가능한 아이디입니다.</p>}
 
         <label className={labelCls}>비밀번호{reqStar}</label>
+        <p className="mt-1 text-[12px] text-sub">{passwordRule(f.upw).hint}</p>
         <input value={upw} onChange={(e) => setUpw(e.target.value)} type="password" minLength={passwordRule(f.upw).minLen} maxLength={20} placeholder={passwordRule(f.upw).hint} className={fieldCls} />
+        {upw && validatePassword(upw, f.upw, { uid, email, name, birth, hp, tel }) && (
+          <p className="mt-1 text-[12px] text-sale">{validatePassword(upw, f.upw, { uid, email, name, birth, hp, tel })}</p>
+        )}
         <label className={labelCls}>비밀번호 확인{reqStar}</label>
         <input value={upwRe} onChange={(e) => setUpwRe(e.target.value)} type="password" maxLength={20} className={fieldCls} />
       </section>

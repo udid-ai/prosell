@@ -46,6 +46,7 @@ npm run typecheck  # tsc --noEmit
 | `PROSELL_AUTH_BASE` | | 브라우저가 닿는 base 가 API base 와 다를 때(로컬 도커 등) |
 | `PROSELL_IMAGE_BASE` | | 로컬 도커 이미지 호스트 치환 (운영은 비워둠) |
 | `NEXT_PUBLIC_SITE_NAME` | | 사이트명(메타/헤더 표기) |
+| `PROSELL_DEV_ORIGINS` | | `npm run dev` 를 localhost 아닌 도메인으로 열 때 허용 호스트(쉼표 구분). 없으면 dev 에서 `/_next/*` 차단으로 일부 이미지가 안 보임(운영 빌드 무관) |
 | `NEXT_PUBLIC_PRODUCT_IMAGE_RATE` | | 상품 이미지 비율(쇼핑몰 `design.image_rate`: 1=정사각형, 1.25=세로형 등, 기본 1) |
 
 ## 인증 방식

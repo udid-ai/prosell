@@ -1,5 +1,5 @@
 // 쇼핑몰 데이터 호출. 비회원(client_id)으로 상품을 조회한다.
-import { apiBase, clientId, credentials, tokens, saveTokens, clearTokens } from "./config.js";
+import { apiBase, clientId, credentials, tokens, saveTokens, clearTokens, getContext } from "./config.js";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 
@@ -38,8 +38,16 @@ async function jsonOrThrow(res, fallback) {
   return data;
 }
 
+/** 조회(GET) 인증 헤더. 백엔드 isClient() 는 X-App-Client-Id 가 없으면 Bearer 토큰으로 대체 검증한다.
+ *  원격 게이트웨이(커넥터)는 요청 컨텍스트에 Bearer 토큰만 있고 client_id 는 쇼핑몰별로 없으므로
+ *  컨텍스트 토큰을 우선 싣는다. (없으면 인증 헤더가 비어 400 AUTHORIZATION 로 실패하던 문제) */
 function authHeaders() {
   const h = { Accept: "application/json" };
+  const ctxToken = getContext()?.accessToken;
+  if (ctxToken) {
+    h.Authorization = `Bearer ${ctxToken}`;
+    return h;
+  }
   const cid = clientId();
   if (cid) h["X-App-Client-Id"] = cid; // 비회원 클라이언트 인증
   return h;
@@ -57,16 +65,14 @@ export async function listProducts(params = {}) {
     if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
   }
   const res = await fetch(u, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`상품 목록 조회 실패: HTTP ${res.status}`);
-  return res.json();
+  return jsonOrThrow(res, "상품 목록 조회 실패");
 }
 
 export async function getProduct(id, expand = DETAIL_EXPAND) {
   const u = new URL(`${apiBase()}/products/${encodeURIComponent(id)}`);
   u.searchParams.set("expand", expand);
   const res = await fetch(u, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`상품 조회 실패: HTTP ${res.status}`);
-  return res.json();
+  return jsonOrThrow(res, "상품 조회 실패");
 }
 
 // ── 운영자 토큰(주문 관리) ───────────────────────────────────────────────
